@@ -1,0 +1,2 @@
+from .atlas_query_manager import AtlasQueryManager
+from .fink_query_manager import FinkQueryManager

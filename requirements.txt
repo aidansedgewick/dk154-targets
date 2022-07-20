@@ -1,0 +1,13 @@
+astropy
+codecov
+extinction
+fastavro
+fink-client
+matplotlib
+numpy
+pandas
+pyyaml
+scipy
+sncosmo
+
+
