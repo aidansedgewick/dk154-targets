@@ -99,7 +99,10 @@ class TargetSelector:
         #if fink_config is not None:
         #    self.query_managers["fink"] = FinkQueryManager(fink_config, self.target_lookup)
         if fink_config is None:
-            raise ValueError("fink_config shouldn't be None!")
+            logger.warning("no fink_config! Set fink_query_manager to None.")
+            self.fink_query_manager = None
+            return
+        logger.info(fink_config)
         self.fink_query_manager = FinkQueryManager(fink_config, self.target_lookup)
 
         #atlas_config = self.query_mananger_config.get("atlas", None)
@@ -129,12 +132,23 @@ class TargetSelector:
         logger.info("perform all queries")
         #for name, query_manager in self.query_managers.items():
         #    query_manager.perform_all_tasks()
+        if self.fink_query_manager is None:
+            msg = (
+                "fink_query_manager is None"
+                "your selector_config should contain fink:\n"
+                "query_managers:\n  fink:\n    "
+                "username: <username>\n    group_id: <group-id>\n    servers\n"
+            )
+            raise ValueError("fink_query manager is None.")
         self.fink_query_manager.perform_all_tasks()
 
 
     def evaluate_all_targets(
-        self, scoring_function: Callable, observatory: EarthLocation = None
+        self, scoring_function: Callable, observatory: EarthLocation=None
     ):
+        obs_name = getattr(observatory, "name", "no_observatory")
+        if obs_name == "no_observatory":
+            assert observatory is None
         for objectId, target in self.target_lookup.items():
             target.evaluate_target(scoring_function, observatory)
 

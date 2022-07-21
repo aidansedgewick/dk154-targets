@@ -26,9 +26,18 @@ class FinkQueryManager:
 
     def __init__(self, consumer_config, target_lookup):
         self.consumer_config = consumer_config
-        self.credential_config = self.consumer_config.get("credential")
-        if self.credential_config is None:
-            raise ValueError("fink config must contain `credential`")
+        self.credential_config = {
+            x: self.consumer_config.get(x) for x in ["username", "group_id", "server"]
+        }
+        print("credential is", self.credential_config)
+        if any([x is None for x in self.credential_config.values()]):
+            msg = (
+                "your selector_config should contain fink:\n"
+                "query_managers:\n  fink:\n    "
+                "username: <username>\n    group_id: <group-id>\n    servers: <server>\n"
+            )
+            raise ValueError(msg)
+
         topics = self.consumer_config.get("topics", None)
         self.topics = topics or ["fink_sso_ztf_candidates_ztf"]
 

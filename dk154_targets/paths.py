@@ -8,6 +8,7 @@ alertDB_path = base_path / "alertDB"
 data_path = base_path / "data"
 plot_path = base_path / "plots"
 targets_of_opportunity_path = base_path / "targets_of_opportunity"
+test_path = base_path / "test_dk154_targets"
 
 ### data_paths 
 atlas_data_path = data_path / "atlas"
