@@ -52,16 +52,3 @@ def readstamp(stamp: str, return_type='array') -> np.array:
                 raise ValueError("choose return_type from 'array', 'FITS'")
     return data
 
-
-def dustmaps_setup()
-    from dustmaps.config import config
-    if not Path(config.fname).exists():
-        logger.info("reset dustmap config")
-        config.reset()
-
-    from dustmaps import sfd
-    logger.info("check for sfd map")
-    try:
-        sfd.query(SkyCoord(ra=0., dec=0., unit="deg"))
-    except:
-        sfd.fetch()
