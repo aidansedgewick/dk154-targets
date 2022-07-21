@@ -1,5 +1,6 @@
 astropy
 codecov
+dustmaps
 extinction
 fastavro
 fink-client
