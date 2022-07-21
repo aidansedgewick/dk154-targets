@@ -64,4 +64,4 @@ def dustmaps_setup()
     try:
         sfd.query(SkyCoord(ra=0., dec=0., unit="deg"))
     except:
-    sfd.fetch()
+        sfd.fetch()
