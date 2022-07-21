@@ -1,9 +1,11 @@
 import gzip
 import io
 import logging
+from pathlib import Path
 
 import numpy as np
 
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -51,3 +53,15 @@ def readstamp(stamp: str, return_type='array') -> np.array:
     return data
 
 
+def dustmaps_setup()
+    from dustmaps.config import config
+    if not Path(config.fname).exists():
+        logger.info("reset dustmap config")
+        config.reset()
+
+    from dustmaps import sfd
+    logger.info("check for sfd map")
+    try:
+        sfd.query(SkyCoord(ra=0., dec=0., unit="deg"))
+    except:
+    sfd.fetch()

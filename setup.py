@@ -14,17 +14,9 @@ setup(
 )
 
 from dk154_targets.paths import create_all_paths
+from dk154_targets.utils import dustmaps_config
 
 create_all_paths()
-
-print("configure dustmaps")
-from dustmaps.config import config
-if not Path(config.fname).exists():
-    config.reset()
-from dustmaps import sfd
-try:
-    sfdq = sfd.query()
-except:
-    sfd.fetch()
+dustmaps_config()
 
 print("are we ready to go?")
