@@ -19,7 +19,7 @@ create_all_paths()
 
 print("configure dustmaps")
 from dustmaps.config import config
-if not Path(dustmaps.config.fname).exists():
+if not Path(config.fname).exists():
     config.reset()
 from dustmaps import sfd
 try:
