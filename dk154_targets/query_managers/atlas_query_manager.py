@@ -35,9 +35,6 @@ class AtlasQueryManager:
         self.target_lookup = target_lookup
 
 
-
-
-
     def queue_forced_photometry(self, objectId_list=None):
         new_submissions = []
         objectId_list = objectId_list or list(self.target_lookup.keys())

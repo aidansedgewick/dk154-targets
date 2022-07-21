@@ -105,7 +105,7 @@ class Target:
     def model_target(self, modelling_function: Callable):
         model = modelling_function(self)
         if model is not None:
-            logger.info(f"model built for {objectId}")
+            logger.info(f"model built for {self.objectId}")
             self.models.append(model)
             self.updated = True
 

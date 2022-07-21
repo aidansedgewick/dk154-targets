@@ -20,8 +20,7 @@ from astropy.time import Time
 
 from dk154_targets.modelling import default_sncosmo_model
 from dk154_targets.queries import FinkQuery
-from dk154_targets.fink_query_manager import FinkQueryManager
-#from AtlasQueryManager, FinkQueryManager
+from dk154_targets.query_managers import FinkQueryManager
 from dk154_targets.scoring import default_score
 from dk154_targets.target import Target
 from dk154_targets.utils import chunk_list, readstamp
@@ -53,6 +52,7 @@ class TargetSelector:
         ###======== target "storage" ========###
         self.target_lookup = {}
 
+        ###======== query managers ========###
         self.query_managers = {}
         self.query_mananger_config = self.selector_config.get("query_managers", {})
         self.initialise_query_managers()

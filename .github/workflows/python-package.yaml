@@ -29,7 +29,7 @@ jobs:
         python3 -m pip install --upgrade pip
         python3 -m pip install flake8 pytest
         python3 -m pip install pytest-cov
-        #if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         python3 -m pip install -r requirements.txt
     #- name: Lint with flake8
     #  run: |
@@ -37,6 +37,10 @@ jobs:
     #    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
     #    # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
     #    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    - name: install dk154-targets as dev
+      run: |
+        python3 -m pip install -e .
+
     - name: Test with pytest
       run: |
         pytest --cov=dk154_targets --cov-report=xml test_dk154_targets

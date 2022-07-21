@@ -41,7 +41,7 @@ def test__init():
     assert isinstance(target.coord, SkyCoord)
     assert np.isclose(target.coord.ra.deg, 30.)
 
-    assert isinstance(target.data, dict) and len(target.data) == 0
+    assert target.target_history is None
     assert isinstance(target.models, list) and len(target.models) == 0
 
 
@@ -74,22 +74,19 @@ def test__basic_evaluate():
     t2 = target.score_history["astro_lab"][0][1].mjd % 1
     assert t2 > t1 # This score was later.
 
-def test__get_last_scores():
+def test__get_last_score():
     target = Target("t3", 90., 45.)
     target.evaluate_target(basic_scoring_function, None)
 
-    last_scores = target.get_last_scores()
-    assert isinstance(last_scores, dict)
-    assert set(last_scores.keys()) == set(["no_observatory"])
-    assert set(last_scores.values()) == set([99.])
+    last_score = target.get_last_score("no_observatory")
+    assert isinstance(last_score, float)
+    assert np.isclose(last_score, 99.)
 
-    last_scores_with_time = target.get_last_scores(return_time=True)
-    assert isinstance(last_scores_with_time, dict)
-    assert set(last_scores_with_time.keys()) == set(["no_observatory"])
-    assert isinstance(last_scores_with_time["no_observatory"], tuple)
-    assert isinstance(last_scores_with_time["no_observatory"][0], float)
-    assert np.isclose(last_scores_with_time["no_observatory"][0], [99.])
-    assert isinstance(last_scores_with_time["no_observatory"][1], Time)
+    last_scores_with_time = target.get_last_score("no_observatory", return_time=True)
+    assert isinstance(last_scores_with_time, tuple)
+    assert isinstance(last_scores_with_time[0], float)
+    assert np.isclose(last_scores_with_time[0], 99.)
+    assert isinstance(last_scores_with_time[1], Time)
     assert abs(target.score_history["no_observatory"][0][1].mjd - Time.now().mjd) < 5. / 86400.
     
 
