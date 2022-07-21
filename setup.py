@@ -23,7 +23,7 @@ except:
     sfd.fetch()
 
 
-from dk154_targets.paths import create_all_path
+from dk154_targets.paths import create_all_paths
 
 create_all_paths()
 
