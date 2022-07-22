@@ -27,13 +27,16 @@ lc_gs = plt.GridSpec(3,4)
 zscaler = ZScaleInterval()
 
 class Target:
+
+    default_base_score = 100.
+
     def __init__(
         self, 
         objectId: str, 
         ra: float, 
         dec: float,
         target_history: pd.DataFrame=None,
-        base_score: float=100.,
+        base_score: float=None,
         **kwargs
     ):
         #===== basics
@@ -41,7 +44,7 @@ class Target:
         self.ra = ra
         self.dec = dec
         self.coord = SkyCoord(ra=ra, dec=dec, unit="deg")
-        self.base_score = base_score
+        self.base_score = base_score or self.default_base_score
 
         #===== keep track of target data #- each should be a TargetData
         self.target_history = target_history
@@ -137,7 +140,7 @@ class Target:
 
 
     @classmethod
-    def from_fink_query(cls, objectId, ra=None, dec=None):
+    def from_fink_query(cls, objectId, ra=None, dec=None, base_score=None):
         target_history = FinkQuery.query_objects(objectId=objectId)
         if target_history is None:
             logger.warn(f"no target history from {objectId}")
@@ -148,18 +151,24 @@ class Target:
         if ra is None or dec is None:
             ra = target_history["ra"].values[-1]
             dec = target_history["dec"].values[-1]
-        target = cls(objectId, ra, dec, target_history=target_history)
+        target = cls(objectId, ra, dec, target_history=target_history, base_score=base_score)
         return target
 
 
     def plot_lightcurve(self,):
-        return plot_lightcurve(self)
-
+        try:
+            return plot_lightcurve(self)
+        except Exception as e:
+            logger.warning(f"NO LIGHTCURVE FOR {self.objectId}")
+            return None
 
     def plot_observing_chart(self, observatory):
         vf = VisibilityForecast(self, observatory)
-        return vf.plot_observing_chart()
-
+        try:
+            return vf.plot_observing_chart()
+        except Exception as e:
+            logger.warning(f"NO OBSERVING CHART FOR {self.objectId}")
+            return None
 
 def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
 

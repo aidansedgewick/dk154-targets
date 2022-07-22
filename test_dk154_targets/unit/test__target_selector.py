@@ -195,11 +195,18 @@ def test__remove_bad_targets():
 
 
 def test__model_targets():
+    empty_config = {}
+    ts = TargetSelector(empty_config)
+    ts.add_target(Target("t0", 50., 30.))
+    assert ts.target_lookup["t0"].updated
+    ts.model_targets(None)
+    assert len(ts.target_lookup["t0"].models) == 0
+    assert ts.target_lookup["t0"].updated
     
     def build_basic_model(target):
         return BasicModel()
 
-    empty_config = {}
+ 
     ts = TargetSelector(empty_config)
     ts.add_target(Target("target1", 34., -4.))
     ts.add_target(Target("target2", 50., 25.))
@@ -232,7 +239,7 @@ def test__model_targets():
 def test__model_and_score():
     pass
 
-
+"""
 def test__targets_of_opportunity():
     opp_targets_config = {
         "targets_of_opportunity_path": "test_dk154_targets/test_targets_of_opportunity"
@@ -272,12 +279,24 @@ def test__targets_of_opportunity():
     assert "TargetOpp1" in ts.target_lookup
     t1 = ts.target_lookup["TargetOpp1"]
     assert isinstance(t1, Target)
+    assert np.isclose(t1.base_score, 100.)
 
     f_list = ts.targets_of_opportunity_path.glob("*.yaml")
     assert sum([1 for f in f_list]) == 0 # The file has been deleted!
+
+    # Example with no objectID - should return None.
+    opp_target2 = dict()
+    opp_target2_path =  ts.targets_of_opportunity_path / "target_opp1.yaml"
+    assert not opp_target2_path.exists()
+    with open(opp_target2_path, "w+") as f:
+        yaml.dump(opp_target2, f)
+    ts.check_for_targets_of_opportunity()
+    assert len(ts.target_lookup) == 1
+
+    # clean up
     expected_opp_target_path.rmdir()
     assert not expected_opp_target_path.exists()
-
+"""
     
 def test__build_ranked_target_list():
     ranked_list_config = {
@@ -351,16 +370,120 @@ def test__build_ranked_target_list():
     assert np.isclose(no_obs_list.iloc[2].score, 5)
 
 
-
-
     assert expected_fake_obs_path.exists()
-    no_obs_list = pd.read_csv(expected_fake_obs_path)
-    assert len(no_obs_list) == 2
-    assert no_obs_list.iloc[0].objectId == "t2"
-    assert np.isclose(no_obs_list.iloc[0].score, 50)
-    assert no_obs_list.iloc[1].objectId == "t1"
-    assert np.isclose(no_obs_list.iloc[1].score, 30)
+    fake_obs_list = pd.read_csv(expected_fake_obs_path)
+    assert len(fake_obs_list) == 2
+    assert fake_obs_list.iloc[0].objectId == "t2"
+    assert np.isclose(fake_obs_list.iloc[0].score, 50)
+    assert fake_obs_list.iloc[1].objectId == "t1"
+    assert np.isclose(fake_obs_list.iloc[1].score, 30)
 
+    os.remove(exepcted_no_obs_path)
+    assert not exepcted_no_obs_path.exists()
+    os.remove(expected_fake_obs_path)
+    assert not expected_fake_obs_path.exists()
 
+    expected_target_list_dir.rmdir()
+    assert not expected_target_list_dir.exists()
 
+def test__start():
+    empty_config = {
+        "sleep_time": 1.0,
+        "observatories": {
+            "lasilla": "lasilla"
+        },
+        "target_list_dir": "test_dk154_targets/test_start_ranked_lists",
+        "targets_of_opportunity_path": "test_dk154_targets/test_start_topp"
+    }
 
+    def basic_score(target, observatory):
+        score = target.dec
+        if observatory is not None:
+            score = score * 2
+            if (0 < target.dec) & (target.dec < 50):
+                score = score * 10 # will make t1 and t2 v high scoring for "lasilla"
+        if target.dec < -30:
+            score = np.nan
+        return score, [], []
+
+    def build_basic_model(target):
+        return BasicModel()
+
+    topp_dir_expected = paths.base_path / "test_dk154_targets/test_start_topp"
+    if topp_dir_expected.exists():
+        for file_path in topp_dir_expected.glob("*"):
+            os.remove(file_path)
+        topp_dir_expected.rmdir()
+    assert not topp_dir_expected.exists()
+
+    ranked_list_dir_expected = paths.base_path / "test_dk154_targets/test_start_ranked_lists"
+    if ranked_list_dir_expected.exists():
+        for file_path in ranked_list_dir_expected.glob("*"):
+            os.remove(file_path)
+        ranked_list_dir_expected.rmdir()
+
+    ts = TargetSelector(empty_config)
+    assert topp_dir_expected.exists()
+    assert ranked_list_dir_expected.exists()
+    ts.add_target(Target("t1", ra=30., dec=30.))
+    ts.add_target(Target("t2", ra=45., dec=-40.))
+    ts.add_target(Target("t3", ra=60., dec=40.))
+    ts.add_target(Target("t4", ra=75., dec=-20.))
+
+    # add these after __init__ so we can check that the TS() makes the dir correctly.
+    topp1_path = topp_dir_expected / "topp1.yaml"
+    assert not topp1_path.exists()
+    with open(topp1_path, "w+") as f:
+        yaml.dump(dict(objectId="t5", ra=90., dec=60.), f)
+    assert topp1_path.exists()
+    topp2_path = topp_dir_expected / "topp2.yaml"
+    assert not topp2_path.exists()
+    with open(topp2_path, "w+") as f:
+        yaml.dump(dict(objectId="t6", ra=105., dec=-60.), f)
+    assert topp2_path.exists()
+
+    ts.start(basic_score, build_basic_model, break_after_one=True)
+    assert len(ts.target_lookup) == 4
+    assert set(ts.target_lookup.keys()) == set(["t1", "t3", "t4", "t5"])
+
+    for objectId, target in ts.target_lookup.items():
+        assert len(target.models) == 1
+        assert isinstance(target.models[0], BasicModel)
+
+    assert np.isclose(ts.target_lookup["t1"].score_history["no_observatory"][0][0], 30.)
+    assert np.isclose(ts.target_lookup["t1"].score_history["lasilla"][0][0], 600.)
+    assert ts.target_lookup["t1"].rank_history["no_observatory"][0][0] == 3
+    assert ts.target_lookup["t1"].rank_history["lasilla"][0][0] == 2
+
+    assert "t2" not in ts.target_lookup
+
+    assert np.isclose(ts.target_lookup["t3"].score_history["no_observatory"][0][0], 40.)
+    assert np.isclose(ts.target_lookup["t3"].score_history["lasilla"][0][0], 800.)
+    assert ts.target_lookup["t3"].rank_history["no_observatory"][0][0] == 2
+    assert ts.target_lookup["t3"].rank_history["lasilla"][0][0] == 1
+
+    assert np.isclose(ts.target_lookup["t4"].score_history["no_observatory"][0][0], -20)
+    assert np.isclose(ts.target_lookup["t4"].score_history["lasilla"][0][0], -40.)
+    assert ts.target_lookup["t4"].rank_history["no_observatory"][0][0] == 99
+    assert ts.target_lookup["t4"].rank_history["lasilla"][0][0] == 99
+
+    assert np.isclose(ts.target_lookup["t5"].score_history["no_observatory"][0][0], 60.)
+    assert np.isclose(ts.target_lookup["t5"].score_history["lasilla"][0][0], 120.)
+    assert ts.target_lookup["t5"].rank_history["no_observatory"][0][0] == 1
+    assert ts.target_lookup["t5"].rank_history["lasilla"][0][0] == 3
+    assert ts.target_lookup["t5"].target_of_opportunity
+
+    assert not topp1_path.exists()
+    assert not topp2_path.exists()
+
+    no_obs_path = ranked_list_dir_expected / "no_observatory_ranked_list.csv"
+    no_obs_list = pd.read_csv(no_obs_path)
+    assert len(no_obs_list) == 3
+    assert np.allclose(no_obs_list["score"].values, [60., 40., 30.,])
+    assert np.allclose(no_obs_list["ra"].values, [90., 60, 30,])
+
+    lasilla_path = ranked_list_dir_expected / "lasilla_ranked_list.csv"
+    lasilla_list = pd.read_csv(lasilla_path)
+
+    assert np.allclose(lasilla_list["score"].values, [800, 600, 120,])
+    assert np.allclose(lasilla_list["ra"].values, [60., 30., 90.,])

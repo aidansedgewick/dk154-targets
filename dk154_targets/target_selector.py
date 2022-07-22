@@ -145,17 +145,17 @@ class TargetSelector:
 
     def perform_query_manager_tasks(self):
         logger.info("perform all queries")
-        #for name, query_manager in self.query_managers.items():
-        #    query_manager.perform_all_tasks()
         if self.fink_query_manager is None:
-            msg = (
-                "fink_query_manager is None"
-                "your selector_config should contain fink:\n"
-                "query_managers:\n  fink:\n    "
-                "username: <username>\n    group_id: <group-id>\n    servers\n"
-            )
-            raise ValueError("fink_query manager is None.")
-        self.fink_query_manager.perform_all_tasks()
+            logger.warning("no fink query manager!")
+            #msg = (
+            #    "fink_query_manager is None"
+            #    "your selector_config should contain fink:\n"
+            #    "query_managers:\n  fink:\n    "
+            #    "username: <username>\n    group_id: <group-id>\n    servers\n"
+            #)
+            #raise ValueError("fink_query manager is None.")
+        else:
+            self.fink_query_manager.perform_all_tasks()
 
 
     def evaluate_all_targets(
@@ -209,14 +209,15 @@ class TargetSelector:
             with open(opp_target_path, "r") as f:
                 target_config = yaml.load(f, Loader=yaml.FullLoader)
                 objectId = target_config.get("objectId", None)
+                base_score = target_config.get("base_score", Target.default_base_score)
                 if objectId is None:
                     msg = (
-                        f"New target of opportunity in file {t_of_opp_file.name}"
+                        f"New target of opportunity in file {opp_target_path.name}"
                         "could not be added: there is no `objectId`!"
                     )
                     target = None
                 else:
-                    target = Target.from_fink_query(objectId)
+                    target = Target.from_fink_query(objectId, base_score=base_score)
                     ra = target_config.get("ra", None)
                     dec = target_config.get("dec", None)
                     if target is None:
@@ -227,7 +228,7 @@ class TargetSelector:
                             )
                             target = None
                         else:
-                            target = Target(objectId, ra, dec)
+                            target = Target(objectId, ra, dec, base_score=base_score)
                             msg = f"Target {objectId} added but no fink data found."
                     else:
                         msg = f"New target of opportunity {objectId} added with fink data!"
@@ -266,10 +267,16 @@ class TargetSelector:
             target_data = dict(
                 objectId=objectId, ra=target.ra, dec=target.dec, score=score
             )
+            
             data_list.append(target_data)
         target_list = pd.DataFrame(data_list)
         target_list.sort_values("score", inplace=True, ascending=False)
         target_list.reset_index(inplace=True)
+
+        for ii, row in target_list.iterrows():
+            target = self.target_lookup[row.objectId]
+            rank = ii + 1
+            target.rank_history[obs_name].append((rank, t_ref))
 
         target_list_path = output_dir / f"{obs_name}_ranked_list.csv"
         target_list.to_csv(target_list_path, index=True)
@@ -287,15 +294,17 @@ class TargetSelector:
                 objectId = row["objectId"]
                 target = self.target_lookup[objectId]
                 lc_fig = target.plot_lightcurve()
-                lc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_lc{ext}"
-                lc_fig.savefig(lc_fig_path)
-                plt.close(lc_fig)
+                if lc_fig is not None:
+                    lc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_lc{ext}"
+                    lc_fig.savefig(lc_fig_path)
+                    plt.close(lc_fig)
                 if observatory is None:
                     continue
                 oc_fig = target.plot_observing_chart(observatory)
-                oc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_oc{ext}"
-                oc_fig.savefig(oc_fig_path)
-                plt.close(oc_fig)
+                if oc_fig is not None:
+                    oc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_oc{ext}"
+                    oc_fig.savefig(oc_fig_path)
+                    plt.close(oc_fig)
 
         
 
