@@ -61,10 +61,13 @@ class Target:
         self.reject_comments = None
 
 
-    def evaluate_target(self, scoring_function: Callable, observatory: EarthLocation):
+    def evaluate_target(
+        self, scoring_function: Callable, observatory: EarthLocation, t_ref: Time=None
+    ):
         obs_name = getattr(observatory, "name", "no_observatory")
         if obs_name == "no_observatory":
             assert observatory is None
+        t_ref = t_ref or Time.now()
 
         scoring_result = scoring_function(self, observatory)
         if isinstance(scoring_result, tuple):
@@ -80,8 +83,8 @@ class Target:
 
         if obs_name not in self.score_history:
             self.score_history[obs_name] = []
-        self.score_history[obs_name].append((score, Time.now()))
-        #self.updated = False
+        assert obs_name in self.score_history
+        self.score_history[obs_name].append((score, t_ref))
 
 
     def get_last_score(self, obs_name, return_time=False):

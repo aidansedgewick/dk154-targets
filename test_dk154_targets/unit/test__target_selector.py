@@ -4,6 +4,7 @@ import yaml
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
@@ -238,6 +239,11 @@ def test__targets_of_opportunity():
     }
 
     expected_opp_target_path = paths.base_path / "test_dk154_targets/test_targets_of_opportunity"
+    if expected_opp_target_path.exists():
+        for file_path in expected_opp_target_path.glob("*"):
+            assert "test_dk154_targets" in file_path.parts
+            os.remove(file_path)
+        expected_opp_target_path.rmdir()
     assert not expected_opp_target_path.exists()
 
     ts = TargetSelector(opp_targets_config)
@@ -269,5 +275,92 @@ def test__targets_of_opportunity():
 
     f_list = ts.targets_of_opportunity_path.glob("*.yaml")
     assert sum([1 for f in f_list]) == 0 # The file has been deleted!
+    expected_opp_target_path.rmdir()
+    assert not expected_opp_target_path.exists()
 
     
+def test__build_ranked_target_list():
+    ranked_list_config = {
+        "target_list_dir": "test_dk154_targets/ranked_lists",
+        "observatories": {
+            "fake_observatory": {"lat": 10., "lon": 90., "height": 10.}
+        }
+    }
+
+    expected_target_list_dir = paths.base_path / "test_dk154_targets/ranked_lists"
+    if expected_target_list_dir.exists():
+        for file_path in expected_target_list_dir.glob("*"):
+            assert "test_dk154_targets" in file_path.parts
+            os.remove(file_path)
+        expected_target_list_dir.rmdir()
+    
+    assert not expected_target_list_dir.exists()
+
+    def test_scoring_function(target, observatory):
+        obs_factor = observatory.height.to("m").value if observatory is not None else 0.
+
+        if target.dec < 30.0:
+            score = -(target.dec + obs_factor)
+        else:
+            score = np.nan
+
+        return score, [], []
+
+    ts = TargetSelector(ranked_list_config)
+    assert len(ts.observatories) == 2
+
+    assert expected_target_list_dir.exists()
+
+    ts.add_target(Target("t1", ra=30., dec=-40.)) # Both lists
+    ts.add_target(Target("t2", ra=60., dec=-60.)) # Both lists
+    ts.add_target(Target("t3", ra=65., dec=-5.)) # no_obs only.
+    ts.add_target(Target("t4", ra=80., dec=10.)) # neither list
+    ts.add_target(Target("t5", ra=85., dec=25.)) # neither list, should not reject
+    ts.add_target(Target("t6", ra=92., dec=32.)) # should reject.
+    ts.add_target(Target("t7", ra=95., dec=45.)) # reject.
+
+    exepcted_no_obs_path = (
+        paths.base_path / 
+        "test_dk154_targets/ranked_lists/no_observatory_ranked_list.csv"
+    )
+    assert not exepcted_no_obs_path.exists()
+
+    expected_fake_obs_path = (
+        paths.base_path / 
+        "test_dk154_targets/ranked_lists/fake_observatory_ranked_list.csv"
+    )
+    assert not expected_fake_obs_path.exists()
+
+    for observatory in ts.observatories:
+        ts.evaluate_all_targets(test_scoring_function, observatory=observatory)
+
+    assert len(ts.target_lookup) == 7
+    ts.remove_bad_targets()
+    assert len(ts.target_lookup) == 5
+    for observatory in ts.observatories:
+        ts.build_ranked_target_list(observatory, plots=False)
+
+    assert exepcted_no_obs_path.exists()
+    no_obs_list = pd.read_csv(exepcted_no_obs_path)
+    assert len(no_obs_list) == 3
+    assert no_obs_list.iloc[0].objectId == "t2"
+    assert np.isclose(no_obs_list.iloc[0].score, 60)
+    assert no_obs_list.iloc[1].objectId == "t1"
+    assert np.isclose(no_obs_list.iloc[1].score, 40)
+    assert no_obs_list.iloc[2].objectId == "t3"
+    assert np.isclose(no_obs_list.iloc[2].score, 5)
+
+
+
+
+    assert expected_fake_obs_path.exists()
+    no_obs_list = pd.read_csv(expected_fake_obs_path)
+    assert len(no_obs_list) == 2
+    assert no_obs_list.iloc[0].objectId == "t2"
+    assert np.isclose(no_obs_list.iloc[0].score, 50)
+    assert no_obs_list.iloc[1].objectId == "t1"
+    assert np.isclose(no_obs_list.iloc[1].score, 30)
+
+
+
+

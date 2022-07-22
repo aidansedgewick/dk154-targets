@@ -29,7 +29,6 @@ class FinkQueryManager:
         self.credential_config = {
             x: self.consumer_config.get(x) for x in ["username", "group_id", "server"]
         }
-        print("credential is", self.credential_config)
         if any([x is None for x in self.credential_config.values()]):
             msg = (
                 "your selector_config should contain fink:\n"

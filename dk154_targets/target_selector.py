@@ -44,6 +44,10 @@ class TargetSelector:
     default_full_target_history_path = paths.base_path / "full_target_history.csv"
     default_selector_pickle_path = paths.base_path / "latest_selector.pkl"
 
+    default_target_list_dir = paths.base_path / "ranked_target_lists"
+
+    default_unranked_value = 99
+
     def __init__(self, selector_config):
 
         ###=========== config ===========###
@@ -51,6 +55,15 @@ class TargetSelector:
 
         ###======== target "storage" ========###
         self.target_lookup = {}
+
+        ###======== target_list_path =========###
+        self.target_list_dir = Path(
+            self.selector_config.get(
+                "target_list_dir",
+                self.default_target_list_dir
+            )
+        )
+        self.target_list_dir.mkdir(exist_ok=True, parents=True)
 
         ###======== query managers ========###
         self.query_managers = {}
@@ -120,6 +133,7 @@ class TargetSelector:
             logger.info(f"initalise obs {obs_name}")
             observatory.name = obs_name
             self.observatories.append(observatory)
+        logger.info(f"init {len(self.observatories)}, inc. None (`no_observatory`)")
 
 
     def add_target(self, target: Target):
@@ -145,13 +159,17 @@ class TargetSelector:
 
 
     def evaluate_all_targets(
-        self, scoring_function: Callable, observatory: EarthLocation=None
+        self, scoring_function: Callable, observatory: EarthLocation=None, t_ref: Time=None
     ):
         obs_name = getattr(observatory, "name", "no_observatory")
         if obs_name == "no_observatory":
             assert observatory is None
+        t_ref = t_ref or Time.now()
+
+        logger.info(f"eval targets for {obs_name}")
         for objectId, target in self.target_lookup.items():
-            target.evaluate_target(scoring_function, observatory)
+            target.evaluate_target(scoring_function, observatory, t_ref=t_ref)
+            assert obs_name in target.score_history
 
 
     def remove_bad_targets(self,):
@@ -169,7 +187,9 @@ class TargetSelector:
         return to_remove
         
 
-    def model_targets(self, modelling_function: Callable, lazy_modelling: bool=True):
+    def model_targets(
+        self, modelling_function: Callable, lazy_modelling: bool=True
+    ):
         if modelling_function is None:
             return None
         logger.info("model all targets")
@@ -222,26 +242,39 @@ class TargetSelector:
             logger.info(f"add {len(targets_of_opportunity)} targets of opportunity")
 
 
-    def build_ranked_target_list(self, observatory, plot_figures=True):
+    def build_ranked_target_list(
+        self, observatory=None, plots=True, output_dir=None, t_ref: Time=None
+    ):
         obs_name = getattr(observatory, "name", "no_observatory")
         if obs_name == "no_observatory":
             assert observatory is None
 
+        t_ref = t_ref or Time.now()
+
+        if output_dir is None:
+            output_dir = self.target_list_dir #/ obs_name
+        output_dir.mkdir(exist_ok=True, parents=True)
+
         data_list = []
         for objectId, target in self.target_lookup.items():
+            if obs_name not in target.rank_history:
+                target.rank_history[obs_name] = []
             score = target.get_last_score(obs_name)
-            if score < 0:
-                target.rank_history[obs_name]
+            if score < 0 or not np.isfinite(score):
+                target.rank_history[obs_name].append((self.default_unranked_value, t_ref))
                 continue
             target_data = dict(
                 objectId=objectId, ra=target.ra, dec=target.dec, score=score
             )
             data_list.append(target_data)
         target_list = pd.DataFrame(data_list)
-        target_list.sort_values("score", inplace=True)
+        target_list.sort_values("score", inplace=True, ascending=False)
         target_list.reset_index(inplace=True)
 
-        if plot_figures:
+        target_list_path = output_dir / f"{obs_name}_ranked_list.csv"
+        target_list.to_csv(target_list_path, index=True)
+
+        if plots:
             obs_plot_dir = self.plot_dir / obs_name
             obs_plot_dir.mkdir(exist_ok=True, parents=True)
             ext = ".png"
