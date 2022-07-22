@@ -73,6 +73,7 @@ class TargetSelector:
                 paths.base_path / "targets_of_opportunity"
             )
         ).absolute()
+        self.targets_of_opportunity_path.mkdir(exist_ok=True, parents=True)
 
         ###========== telegram_messenger ==========###
         # todo add telegram messenger??
@@ -168,13 +169,13 @@ class TargetSelector:
         return to_remove
         
 
-    def model_targets(self, modelling_function: Callable):
+    def model_targets(self, modelling_function: Callable, lazy_modelling: bool=True):
         if modelling_function is None:
             return None
         logger.info("model all targets")
         modelled = []
         for objectId, target in self.target_lookup.items():
-            if not target.updated and self.lazy_modelling:
+            if not target.updated and lazy_modelling:
                 continue
             target.model_target(modelling_function)
             target.updated = False
@@ -182,10 +183,10 @@ class TargetSelector:
 
     def check_for_targets_of_opportunity(self,):
         logger.info("look for targets of opportunity")
-        t_of_opp_files = list(self.targets_of_opportunity_path.glob("*.yaml"))
+        opp_target_path_list = list(self.targets_of_opportunity_path.glob("*.yaml"))
         targets_of_opportunity = []
-        for t_of_opp_file in t_of_opp_files:
-            with open(t_of_opp_file, "r") as f:
+        for opp_target_path in opp_target_path_list:
+            with open(opp_target_path, "r") as f:
                 target_config = yaml.load(f, Loader=yaml.FullLoader)
                 objectId = target_config.get("objectId", None)
                 if objectId is None:
@@ -215,7 +216,8 @@ class TargetSelector:
                         self.target_lookup[objectId] = target
                         targets_of_opportunity.append(objectId)
                 #TODO send message
-                #TODO delete ToO file!
+                os.remove(opp_target_path)
+                assert not opp_target_path.exists()
         if len(targets_of_opportunity) > 0:
             logger.info(f"add {len(targets_of_opportunity)} targets of opportunity")
 
@@ -264,17 +266,25 @@ class TargetSelector:
 
         
 
-    def start(self, scoring_function: Callable, modelling_function: Callable):
-        self.perform_query_manager_tasks()
-        self.check_for_targets_of_opportunity()
-        self.model_targets(modelling_function)
-        for observatory in self.observatories:
-            self.evaluate_all_targets(scoring_function, observatory=observatory)
-        logger.info(f"{len(self.target_lookup)} targets before removing bad targets")
-        self.remove_bad_targets()
-        for observatory in self.observatories:
-            self.build_ranked_target_list(observatory)
+    def start(
+        self, 
+        scoring_function: Callable, 
+        modelling_function: Callable, 
+        break_after_one=False, # ONLY USED FOR TESTING!
+    ):
+        while True:
+            self.perform_query_manager_tasks()
+            self.check_for_targets_of_opportunity()
+            self.model_targets(modelling_function, lazy_modelling=self.lazy_modelling)
+            for observatory in self.observatories:
+                self.evaluate_all_targets(scoring_function, observatory=observatory)
+            logger.info(f"{len(self.target_lookup)} targets before removing bad targets")
+            self.remove_bad_targets()
+            for observatory in self.observatories:
+                self.build_ranked_target_list(observatory)
 
-        sleep_time = self.selector_config.get("sleep_time", 5.)
-        logger.info(f"sleep for {sleep_time} sec")
-        time.sleep(sleep_time)
+            sleep_time = self.selector_config.get("sleep_time", 5.)
+            logger.info(f"sleep for {sleep_time} sec")
+            time.sleep(sleep_time)
+            if break_after_one:
+                break

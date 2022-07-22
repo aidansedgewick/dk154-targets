@@ -33,6 +33,7 @@ class Target:
         ra: float, 
         dec: float,
         target_history: pd.DataFrame=None,
+        base_score: float=100.,
         **kwargs
     ):
         #===== basics
@@ -40,6 +41,7 @@ class Target:
         self.ra = ra
         self.dec = dec
         self.coord = SkyCoord(ra=ra, dec=dec, unit="deg")
+        self.base_score = base_score
 
         #===== keep track of target data #- each should be a TargetData
         self.target_history = target_history
@@ -135,6 +137,9 @@ class Target:
     def from_fink_query(cls, objectId, ra=None, dec=None):
         target_history = FinkQuery.query_objects(objectId=objectId)
         if target_history is None:
+            logger.warn(f"no target history from {objectId}")
+            return None
+        if isinstance(target_history, pd.DataFrame) and target_history.empty:
             return None
         target_history.sort_values("jd", inplace=True)
         if ra is None or dec is None:
@@ -143,8 +148,10 @@ class Target:
         target = cls(objectId, ra, dec, target_history=target_history)
         return target
 
+
     def plot_lightcurve(self,):
         return plot_lightcurve(self)
+
 
     def plot_observing_chart(self, observatory):
         vf = VisibilityForecast(self, observatory)

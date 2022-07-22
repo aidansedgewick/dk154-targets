@@ -25,6 +25,11 @@ basic_config = {
 }
 
 
+class BasicModel:
+    def __init__(self):
+        pass
+
+
 
 test_config = {
     "sleep_time": 2.0,
@@ -149,3 +154,120 @@ def test__evaluate_all_targets():
     t1_score_time = t1.score_history["no_observatory"][0][1]
     assert isinstance(t1_score_time, Time)
     assert abs(t1_score_time.mjd - t_eval.mjd) < 2. / 86400. # less than 2 seconds.
+
+
+def test__remove_bad_targets():
+    empty_config = {}
+    ts = TargetSelector(empty_config)
+    assert ts.observatories[0] is None 
+    assert len(ts.observatories) == 1
+
+    t1 = Target("t1", 0., 60.,)
+    t2 = Target("t2", 0., -20.,)
+    t3 = Target("t3", 0., 40)
+    t4 = Target("t4", 0., 0.)
+    ts.add_target(t1)
+    ts.add_target(t2)
+    ts.add_target(t3)
+    ts.add_target(t4)
+
+    def reject_above_dec30(target, observatory):
+        if target.dec > 30:
+            return np.nan, [], []
+        else:
+            return 99., [], []
+
+    ts.evaluate_all_targets(reject_above_dec30) # default observatory=None
+    assert len(ts.target_lookup) == 4 # Haven't removed anything yet...
+
+    assert not np.isfinite(t1.score_history["no_observatory"][0][0])
+    assert np.isfinite(t2.score_history["no_observatory"][0][0])
+    assert np.isclose(t2.score_history["no_observatory"][0][0], 99.)
+    assert not np.isfinite(t3.score_history["no_observatory"][0][0])
+    assert np.isfinite(t4.score_history["no_observatory"][0][0])
+    assert np.isclose(t2.score_history["no_observatory"][0][0], 99.)
+    
+    ts.remove_bad_targets()
+
+    assert len(ts.target_lookup) == 2
+    assert set(ts.target_lookup.keys()) == set(["t2", "t4"])
+
+
+def test__model_targets():
+    
+    def build_basic_model(target):
+        return BasicModel()
+
+    empty_config = {}
+    ts = TargetSelector(empty_config)
+    ts.add_target(Target("target1", 34., -4.))
+    ts.add_target(Target("target2", 50., 25.))
+    ts.add_target(Target("target3", 270., 65.))
+
+    assert len(ts.target_lookup) == 3
+    for objectId, target in ts.target_lookup.items():
+        assert target.updated
+        assert len(target.models) == 0
+
+    ts.model_targets(build_basic_model)
+    for objectId, target in ts.target_lookup.items():
+        assert not target.updated
+        assert len(target.models) == 1
+        assert isinstance(target.models[0], BasicModel)
+
+    ts.model_targets(build_basic_model, lazy_modelling=True)
+    for objectId, target in ts.target_lookup.items():
+        assert not target.updated
+        assert len(target.models) == 1
+        # No extra models added!
+
+    ts.model_targets(build_basic_model, lazy_modelling=False)
+    for objectId, target in ts.target_lookup.items():
+        assert not target.updated
+        assert len(target.models) == 2
+        # New model added!
+
+
+def test__model_and_score():
+    pass
+
+
+def test__targets_of_opportunity():
+    opp_targets_config = {
+        "targets_of_opportunity_path": "test_dk154_targets/test_targets_of_opportunity"
+    }
+
+    expected_opp_target_path = paths.base_path / "test_dk154_targets/test_targets_of_opportunity"
+    assert not expected_opp_target_path.exists()
+
+    ts = TargetSelector(opp_targets_config)
+    assert expected_opp_target_path.exists()
+    assert len(ts.target_lookup) == 0
+
+    assert ts.targets_of_opportunity_path.parts[-1] == "test_targets_of_opportunity"
+    t_opp_path = ts.targets_of_opportunity_path
+    f_list = ts.targets_of_opportunity_path.glob("*.yaml")
+    assert sum([1 for f in f_list]) == 0 # f_list from glob is a generator, not a list...
+
+    # Read a basic example - there will be no fink data for this.
+    opp_target1 = dict(
+        objectId="TargetOpp1", ra=30., dec=45.
+    )
+    opp_target1_path =  ts.targets_of_opportunity_path / "target_opp1.yaml"
+    assert not opp_target1_path.exists()
+    with open(opp_target1_path, "w+") as f:
+        yaml.dump(opp_target1, f)
+    assert opp_target1_path.exists()
+
+    f_list = ts.targets_of_opportunity_path.glob("*.yaml")
+    assert sum([1 for f in f_list]) == 1
+    ts.check_for_targets_of_opportunity()
+    assert len(ts.target_lookup) == 1
+    assert "TargetOpp1" in ts.target_lookup
+    t1 = ts.target_lookup["TargetOpp1"]
+    assert isinstance(t1, Target)
+
+    f_list = ts.targets_of_opportunity_path.glob("*.yaml")
+    assert sum([1 for f in f_list]) == 0 # The file has been deleted!
+
+    
