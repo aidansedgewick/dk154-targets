@@ -74,6 +74,34 @@ def test__basic_evaluate():
     t2 = target.score_history["astro_lab"][0][1].mjd % 1
     assert t2 > t1 # This score was later.
 
+
+def test__bad_scoring_function():
+
+    def scoring_bad_signature():
+        return 99., [], []
+
+    res = scoring_bad_signature()
+    assert len(res) == 3 and isinstance(res, tuple)
+    assert np.isclose(res[0], 99.)
+    assert isinstance(res[1], list) and isinstance(res[2], list)
+
+    target = Target("t1", 30., 60.,)
+    with pytest.raises(TypeError):
+        target.evaluate_target(scoring_bad_signature, None)
+
+    def bad_return_two_floats(target, observatory):
+        return 99., 99.
+    
+    with pytest.raises(ValueError):
+        target.evaluate_target(bad_return_two_floats, None)
+
+    def bad_return_str(target, observatory):
+        return "score", [], []
+
+    with pytest.raises(ValueError):
+        target.evaluate_target(bad_return_str, None)
+
+
 def test__get_last_score():
     target = Target("t3", 90., 45.)
     target.evaluate_target(basic_scoring_function, None)
@@ -88,6 +116,11 @@ def test__get_last_score():
     assert np.isclose(last_scores_with_time[0], 99.)
     assert isinstance(last_scores_with_time[1], Time)
     assert abs(target.score_history["no_observatory"][0][1].mjd - Time.now().mjd) < 5. / 86400.
+
+    # test with obervatory = None
+
+    none_score = target.get_last_score(None)
+    assert np.isclose(none_score, 99.)
     
 
 def test__basic_model():
@@ -107,3 +140,44 @@ def test__basic_model():
     assert isinstance(target.models[0], BasicModel)
     
 
+def test__update_target_history():
+    main_date = 2459000.5 # this is 00:00 on May 31st 2020.
+
+    t1 = Target("t1", 30., 30.)
+    new_data = pd.DataFrame(
+        {
+            "jd": np.array([0.0, 1.1, 1.9, 3.3]) + main_date,
+            "magpsf": np.array([19.5, 19.0, 18.5, 18.0]),
+            "sigmapsf": np.array([0.1, 0.1, 0.1, 0.1]),
+        }
+    )
+    assert t1.target_history is None
+    t1.update_target_history(new_data)
+    assert isinstance(t1.target_history, pd.DataFrame)
+    assert len(t1.target_history)
+
+
+    existing_th = pd.DataFrame(
+        {
+            "jd": np.array([-2.0, -1.0, 0.1, 0.5]) + main_date,
+            "magpsf": np.array([20.5, 20.0, 19.4, 19.2]),
+            # NO sigmapsf to see if columns carry properly.
+        }
+    )
+    t2 = Target("t2", 60., 30., target_history=existing_th)
+    assert len(t2.target_history) == 4
+    assert t2.target_history is not None
+
+
+    print("t2 target hist", t2.target_history)
+    t2.update_target_history(new_data)
+    assert len(t2.target_history) == 7
+    assert np.allclose(
+        t2.target_history["jd"], np.array([-2.0, -1.0, 0.1, 0.5, 1.1, 1.9, 3.3]) + 2459000.5
+    )
+    assert np.allclose(
+        t2.target_history["magpsf"],
+        np.array([20.5, 20.0, 19.4, 19.2, 19.0, 18.5, 18.0])
+    )
+    assert all(not np.isfinite(x) for x in t2.target_history["sigmapsf"].values[:4])
+    assert np.allclose(t2.target_history["sigmapsf"].values[4:], [0.1, 0.1, 0.1])

@@ -201,10 +201,11 @@ class TargetSelector:
             target.updated = False
         
 
-    def check_for_targets_of_opportunity(self,):
+    def check_for_targets_of_opportunity(self, try_fink=True):
         logger.info("look for targets of opportunity")
         opp_target_path_list = list(self.targets_of_opportunity_path.glob("*.yaml"))
         targets_of_opportunity = []
+        logger.info(f"found {len(opp_target_path_list)} target yamls.")
         for opp_target_path in opp_target_path_list:
             with open(opp_target_path, "r") as f:
                 target_config = yaml.load(f, Loader=yaml.FullLoader)
@@ -217,7 +218,10 @@ class TargetSelector:
                     )
                     target = None
                 else:
-                    target = Target.from_fink_query(objectId, base_score=base_score)
+                    if self.fink_query_manager is not None:
+                        target = Target.from_fink_query(objectId, base_score=base_score)
+                    else:
+                        target = None
                     ra = target_config.get("ra", None)
                     dec = target_config.get("dec", None)
                     if target is None:

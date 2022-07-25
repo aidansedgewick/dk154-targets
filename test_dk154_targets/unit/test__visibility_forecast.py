@@ -20,7 +20,7 @@ def test__initialise():
         }
     )
     polaris = Target(
-        "polaris", ra=37.95456067, dec=+89.26410897, model_fit=False
+        "polaris", ra=37.95456067, dec=+89.26410897,
         #target_history=polaris_history
     )
     north_pole = EarthLocation(lat=90., lon=0., height=0.)

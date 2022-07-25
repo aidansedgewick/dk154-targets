@@ -46,8 +46,12 @@ class VisibilityForecast:
             self.sun_dist = self.target.coord.separation(SkyCoord(ra=sun_pos.ra, dec=sun_pos.dec))
 
 
-    def nearest_night(self, t_ref: Time=None):
+    def immediate_night(self, t_ref: Time=None):
         t_ref = t_ref or Time.now()
+
+        if t_ref > self.time_grid[-1]:
+            self.update(t0=t_ref)
+
         obs_night_mask = self.sun_altaz.alt < -18.0 * u.deg # when is the sun down?
         interval = (self.time_grid[1:] - self.time_grid[:-1])[0]
         night_grid = self.time_grid[ obs_night_mask ] # Time values during the night.
@@ -57,6 +61,11 @@ class VisibilityForecast:
         #    logger.info(f"not dark at obs {self.observatory.info.name}")
         t_ref = t_ref if is_currently_night else night_grid[0]
         return t_ref
+
+    def get_immediate_altitude(self, t_ref: Time=None):
+        t_ref = t_ref or Time.now()
+        immediate_night = self.get_immediate_night()
+        return self.target.
         
 
     def target_validity_check(self,):

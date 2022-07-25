@@ -430,6 +430,8 @@ def test__start():
     ts.add_target(Target("t3", ra=60., dec=40.))
     ts.add_target(Target("t4", ra=75., dec=-20.))
 
+    assert ts.fink_query_manager is None
+
     # add these after __init__ so we can check that the TS() makes the dir correctly.
     topp1_path = topp_dir_expected / "topp1.yaml"
     assert not topp1_path.exists()
@@ -487,3 +489,4 @@ def test__start():
 
     assert np.allclose(lasilla_list["score"].values, [800, 600, 120,])
     assert np.allclose(lasilla_list["ra"].values, [60., 30., 90.,])
+

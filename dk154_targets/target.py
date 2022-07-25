@@ -1,4 +1,5 @@
 import copy
+import inspect
 import logging
 import traceback
 #from dataclasses import dataclass # >=py3.7 only!
@@ -37,7 +38,6 @@ class Target:
         dec: float,
         target_history: pd.DataFrame=None,
         base_score: float=None,
-        **kwargs
     ):
         #===== basics
         self.objectId = objectId
@@ -71,18 +71,29 @@ class Target:
         if obs_name == "no_observatory":
             assert observatory is None
         t_ref = t_ref or Time.now()
+        
+
+        scoring_function_message = (
+            "`scoring_function` should accept two arguments `target` and `observatory` "
+            "(which could be `None`), and should return float and optionally two lists of strings."
+        )
 
         scoring_result = scoring_function(self, observatory)
         if isinstance(scoring_result, tuple):
             if len(scoring_result) != 3:
-                raise ValueError
+                raise ValueError(scoring_function_message)
             score, score_comments, reject_comments = scoring_result
             self.last_score_comments[obs_name] = score_comments
             self.reject_comments = reject_comments
-        elif isinstance(scoring_result, ()):
+        elif isinstance(scoring_result, (float, int)):
             score = scoring_result
             score_comments = []
             reject_comments = []
+        else:
+            raise ValueError(scoring_function_message)
+
+        if not isinstance(score, (float, int)):
+            raise ValueError(scoring_function_message)
 
         if obs_name not in self.score_history:
             self.score_history[obs_name] = []
@@ -118,25 +129,57 @@ class Target:
             self.updated = True
 
 
-    def update_target_history(self, new_df, keep_old=True):
+    def update_target_history(self, new_df, keep_old=True, date_col="jd",):
+        """
+        Concatenate new data to the existing target_history
+
+        Parameters
+        ----------
+        new_df
+            new data to include in target
+        keep_old
+            if the earliest data in the new data is older than the last data in the 
+            existing target_history, we need to decide whether to truncate the old 
+            data or new to avoid inluding repeat observations.
+            By default, truncate the new data to only include observations after the
+            last data (`keep_old=True` default.)
+        date_col
+            The column used to truncate either the `target_history` or the `new_df`.
+            default date_col=`jd`.
+
+        """
+        print("current th:", self.objectId)
+        print(self.target_history)
+
         if self.target_history is None:
             self.target_history = new_df
-
-        if new_df["jd"].min() < self.target_history["jd"].max():
-            min_new_df_jd = new_df["jd"].min()
-            max_target_history_jd = self.target_history["jd"].max()
-            if keep_old:
-                existing_data = self.target_history
-                new_data = new_df.query("jd>@max_target_history_jd")
-            else:
-                existing_data = self.target_history.query("jd<@min_new_df_jd")
-                new_data = new_df
-            assert old_target_history["jd"].max() < new_target_history["jd"].min()
-            target_history = pd.concat([existing_data, new_data])
-            self.target_history = target_history
+            logger.info("no target_history, use new data")
         else:
-            self.target_history = pd.concat([self.target_history, new_df])
-        self.target_history.sort_values("jd", inplace=True)
+            if new_df[date_col].min() > self.target_history[date_col].max():
+                logger.info(f"{self.objectId} update: simple concat")
+                self.target_history = pd.concat([self.target_history, new_df])
+            else:
+                min_new_date = new_df[date_col].min()
+                max_existing_date = self.target_history[date_col].max()
+                if keep_old:
+                    existing_data = self.target_history
+                    print(new_df[date_col].min())
+                    print(new_df[date_col])
+                    print(existing_data["jd"])
+                    print(new_df["jd"] > max_existing_date)
+                    new_data = new_df.query(f"{date_col} > @max_existing_date")
+                    print(len(new_data))
+                    print(new_data[date_col].min())
+                    logger.info(f"{self.objectId} update: truncate update data")
+                else:
+                    existing_data = self.target_history.query(f"{date_col} < @min_new_date")
+                    new_data = new_df
+                print(existing_data[date_col].max(), new_data[date_col].min())
+                assert existing_data[date_col].max() < new_data[date_col].min()
+                target_history = pd.concat([existing_data, new_data])
+                self.target_history = target_history
+
+        self.target_history.sort_values(date_col, inplace=True)
 
 
     @classmethod
