@@ -83,9 +83,6 @@ def plot_observing_chart(observer: Observer, target: "Target"=None, t_ref=None):
 
     ax.set_xlim(timestamps[0], timestamps[-1])
 
-
-
-
     if target is not None:
         ax2 = ax.twinx()
         mask = target_altaz.alt > 10. * u.deg
