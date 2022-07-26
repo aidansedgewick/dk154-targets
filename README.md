@@ -53,6 +53,7 @@ Example:
 import pandas as pd
 
 from astropy import units as u
+from astropy.time import Time
 
 from dk154_targets import TargetSelector, VisibilityForecast
 
@@ -77,12 +78,16 @@ def prefer_brightest_targets(target, observatory):
         score = last_flux
 
     if observatory is not None:
-        vf = VisibilityForecast(target, observatory) 
-        next_altitude = vf.get_immediate_altitude() 
-        # Returns altitude *now* if it's currently night time at the observatory,
-        # else returns the altitude immediately after next sunset at the observatory.
-        if next_altitude < 30 * u.deg:
-            score = -1. # Targets whose last score is <0 are not included in the next target list.
+        # observatory is an `astroplan.observer.Observer`
+        t_now = Time.now()
+        target_altaz = observer.altaz(t_now, target.coord) # target.coord is a SkyCoord
+        if target_altaz.alt < 30 * u.deg:
+            # much too low!
+            score = -1.0 # Don't delete this target, but not interested now.
+
+    
+        
+    
 
 selector = TargetSelector.from_config() # Reads from the default config file.
 selector.start(scoring_function=prefer_brightest_targets)

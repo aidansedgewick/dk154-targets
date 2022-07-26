@@ -84,13 +84,13 @@ def plot_observing_chart(observer: Observer, target: "Target"=None, t_ref=None):
     ax.set_xlim(timestamps[0], timestamps[-1])
 
 
-    ax2 = ax.twinx()
+
 
     if target is not None:
+        ax2 = ax.twinx()
         mask = target_altaz.alt > 10. * u.deg
         airmass_time = timestamps[ mask ]
         airmass = 1. / np.cos(target_altaz.zen[ mask ]).value
-        
         ax2.plot(airmass_time, airmass, color="red")
         ax2.set_ylim(1.0, 4.0)
         ax2.set_ylabel("Airmass", color="red", fontsize=14)
