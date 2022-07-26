@@ -7,7 +7,7 @@ from astropy import units as u
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
-from dk154_targets.visibility_forecast import VisibilityForecast
+from astroplan import Observer
 
 class ScoringFunctionError(Exception):
     pass
@@ -28,7 +28,7 @@ def gauss(x, A, mu, sig):
 def tuned_interest_function(x):
     return logistic(x, 10.0, -1./2., -6.) + gauss(x, 4., 0., 1.)
 
-def default_score(target: "Target", observatory: EarthLocation):
+def default_score(target: "Target", observatory: Observer):
 
     logger = logging.getLogger("default_score")
 
@@ -140,23 +140,8 @@ def default_score(target: "Target", observatory: EarthLocation):
         print(f"score is nan!\n", factors)
 
     if observatory is not None:
-        t_now = Time.now()
-        dummy_vf = VisibilityForecast(target=None, observatory=observatory, t0=t_now)
-        t_ref = dummy_vf.nearest_night(t_ref=t_now) # return t_now if nighttime, else sunset
-
-
-        vf = VisibilityForecast(target, observatory, t0=t_ref)
-        current_airmass = 1. / np.cos(vf.target_altaz.zen[0])
-        current_alt = vf.target_altaz.alt[0]
-
-        if current_airmass < 0:
-            current_airmass = 100.
-        score = score / current_airmass
-        score_comments.append(f"airmass = {current_airmass:.2f}")
-
-        #if current_alt < 20. * u.deg:
-        #    negative_score = True
-
+        tonight = observatory.tonight(horizon=-18*u.deg) # Now if night else closest sunset.
+        target_altaz = observer.altaz()
 
 
     # normalise score!
@@ -179,7 +164,7 @@ def default_score(target: "Target", observatory: EarthLocation):
     return score, reject_comments, score_comments
 
 
-def uniform_score(target: "Target", observatory: EarthLocation):
+def uniform_score(target: "Target", observatory: Observer):
     return 1., [], []
 
 if __name__ == "__main__":

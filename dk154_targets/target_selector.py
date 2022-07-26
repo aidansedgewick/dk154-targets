@@ -18,13 +18,14 @@ import astropy.units as u
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.time import Time
 
+from astroplan import Observer
+
 from dk154_targets.modelling import default_sncosmo_model
 from dk154_targets.queries import FinkQuery
 from dk154_targets.query_managers import FinkQueryManager
 from dk154_targets.scoring import default_score
 from dk154_targets.target import Target
 from dk154_targets.utils import chunk_list, readstamp
-from dk154_targets.visibility_forecast import VisibilityForecast
 
 from dk154_targets import paths
 
@@ -127,11 +128,14 @@ class TargetSelector:
     def initialise_observatories(self,):
         for obs_name, obs_id in self.observatory_config.items():
             if isinstance(obs_id, str):
-                observatory = EarthLocation.of_site(obs_id)
+                #observatory = EarthLocation.of_site(obs_id)
+                location = EarthLocation.of_site(obs_id)
             else:
-                observatory = EarthLocation(**obs_id)
+                #observatory = EarthLocation(**obs_id)
+                location = EarthLocation(**obs_id)
+            observatory = Observer(location=location, name=obs_name)
             logger.info(f"initalise obs {obs_name}")
-            observatory.name = obs_name
+            #observatory.name = obs_name
             self.observatories.append(observatory)
         logger.info(f"init {len(self.observatories)}, inc. None (`no_observatory`)")
 
@@ -311,7 +315,6 @@ class TargetSelector:
                     plt.close(oc_fig)
 
         
-
     def start(
         self, 
         scoring_function: Callable, 

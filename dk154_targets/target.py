@@ -20,7 +20,7 @@ from astropy.visualization import ZScaleInterval
 #from dk154_targets.queries import FinkQuery, AtlasQueryManager
 from dk154_targets.queries import FinkQuery
 from dk154_targets.scoring import ScoringBadSignatureError, ScoringBadReturnValueError
-from dk154_targets.visibility_forecast import VisibilityForecast
+from dk154_targets.visibility_forecast import plot_observing_chart
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -205,13 +205,12 @@ class Target:
             logger.warning(f"NO LIGHTCURVE FOR {self.objectId}")
             return None
 
+
     def plot_observing_chart(self, observatory):
-        vf = VisibilityForecast(self, observatory)
-        try:
-            return vf.plot_observing_chart()
-        except Exception as e:
-            logger.warning(f"NO OBSERVING CHART FOR {self.objectId}")
-            return None
+        if observatory is not None:
+            return plot_observing_chart(observatory)
+        return None
+
 
 def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
 

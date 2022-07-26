@@ -9,6 +9,8 @@ import pandas as pd
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
+from astroplan import Observer
+
 from dk154_targets.query_managers import FinkQueryManager
 from dk154_targets.target import Target
 from dk154_targets.target_selector import TargetSelector
@@ -62,9 +64,10 @@ def test__init():
     assert len(selector.observatory_config) == 3
     assert len(selector.observatories) == 4 # always initialise with "None" as first observatory.
     assert selector.observatories[0] is None
-    assert all(isinstance(obs, EarthLocation) for obs in selector.observatories[1:])
-    assert np.isclose(selector.observatories[1].lon.deg, -70.73) # of_site worked correctly.
-    assert np.isclose(selector.observatories[1].lat.deg, -29.256667)
+    assert all(isinstance(obs, Observer) for obs in selector.observatories[1:])
+    assert np.isclose(selector.observatories[1].location.lon.deg, -70.73) # of_site worked correctly.
+    assert np.isclose(selector.observatories[1].location.lat.deg, -29.256667)
+    assert isinstance(selector.observatories[1], Observer)
 
     assert isinstance(selector.fink_query_manager, FinkQueryManager)
     assert isinstance(selector.fink_query_manager.credential_config, dict)
@@ -239,7 +242,7 @@ def test__model_targets():
 def test__model_and_score():
     pass
 
-"""
+
 def test__targets_of_opportunity():
     opp_targets_config = {
         "targets_of_opportunity_path": "test_dk154_targets/test_targets_of_opportunity"
@@ -296,7 +299,7 @@ def test__targets_of_opportunity():
     # clean up
     expected_opp_target_path.rmdir()
     assert not expected_opp_target_path.exists()
-"""
+
     
 def test__build_ranked_target_list():
     ranked_list_config = {
@@ -316,7 +319,7 @@ def test__build_ranked_target_list():
     assert not expected_target_list_dir.exists()
 
     def test_scoring_function(target, observatory):
-        obs_factor = observatory.height.to("m").value if observatory is not None else 0.
+        obs_factor = observatory.location.height.to("m").value if observatory is not None else 0.
 
         if target.dec < 30.0:
             score = -(target.dec + obs_factor)

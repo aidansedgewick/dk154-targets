@@ -35,8 +35,10 @@ which is a pd.DataFrame.
 Change the way the targets are scored by providing a new scoring function.
 You can write your own scoring function, although there is a default one to rank supernova targets.
 
-Your function should have (exactly) two arguements `target`, which is an instance of `dk154_targets.target.Target`,
-and `observatory`, which will be `None`, or `astropy.coordinates.EarthLocation` (with the added `name` attribute`).
+Your function should have (exactly) two arguements:
+ - `target`, which is an instance of [`dk154_targets.target.Target`](https://github.com/aidansedgewick/dk154-targets/blob/main/dk154_targets/target.py#L30),
+ - `observatory`, which will be `None`, or an [`astroplan.observer.Observer`](https://astroplan.readthedocs.io/en/latest/api/astroplan.Observer.html#astroplan.Observer)
+ `astropy.coordinates.EarthLocation` (with the added `name` attribute`).
 You should give your scoring function to the TargetSelector on `start`.
 
 - If your target is "bad" and should be removed from the target list
@@ -50,6 +52,8 @@ Example:
 ```
 import pandas as pd
 
+from astropy import units as u
+
 from dk154_targets import TargetSelector, VisibilityForecast
 
 def prefer_brightest_targets(target, observatory):
@@ -62,7 +66,8 @@ def prefer_brightest_targets(target, observatory):
     score_comments = []
     reject_comments = []
 
-    last_mag = target.target_history["magpsf"].values[-1] # The latest value
+    target.target_history.sort_values("jd", inplace=True) # Make sure the last row is the latest.
+    last_mag = target.target_history["magpsf"].values[-1] # The last value in the column.
 
     if last_mag > 22.5:
         score = np.nan # This is so faint we'll never want to observe it...
@@ -75,10 +80,12 @@ def prefer_brightest_targets(target, observatory):
         vf = VisibilityForecast(target, observatory) 
         next_altitude = vf.get_immediate_altitude() 
         # Returns altitude *now* if it's currently night time at the observatory,
-        # else returns the altitude if the 
+        # else returns the altitude immediately after next sunset at the observatory.
+        if next_altitude < 30 * u.deg:
+            score = -1. # Targets whose last score is <0 are not included in the next target list.
 
-
-selector = TargetSelector(scoring_function=prefer_brightest_targets)
+selector = TargetSelector.from_config() # Reads from the default config file.
+selector.start(scoring_function=prefer_brightest_targets)
 
 ```
 
