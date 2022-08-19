@@ -5,6 +5,7 @@ dustmaps
 extinction
 fastavro
 fink-client
+iminuit
 matplotlib
 numpy
 pandas
