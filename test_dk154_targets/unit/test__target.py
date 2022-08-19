@@ -2,16 +2,20 @@ import datetime
 import pytest
 
 import numpy as np
-
 import pandas as pd
+
+import matplotlib.pyplot as plt
 
 from astropy.coordinates import SkyCoord, EarthLocation
 from astropy.time import Time
 
+from astroplan import Observer
+
 from sncosmo.models import Model
 
-from dk154_targets.target import Target
+from dk154_targets.target import Target, plot_lightcurve, plot_observing_chart
 from dk154_targets.scoring import ScoringBadSignatureError, ScoringBadReturnValueError
+from dk154_targets.modelling import default_sncosmo_model
 
 
 t_test = Time(datetime.datetime(year=1993, month=2, day=2, hour=6, minute=30))
@@ -20,8 +24,12 @@ class BasicModel:
     def __init__(self,):
         pass
 
-    def bandflux(self, band=None):
-        return 5.7547e-4 # should be mag~17.0
+    def bandflux(self, band, time, zp=None, zpsys=None):
+        f0 = 5.7547e-4
+        if hasattr(time, "__len__"):
+            return np.array([f0] * len(time)) # should be mag~17.0
+        return f0
+
 
 
 def basic_scoring_function(target, observatory):
@@ -58,9 +66,9 @@ def test__basic_evaluate():
     assert set(target.last_score_comments.keys()) == set(["no_observatory"])
     assert set(target.last_score_comments["no_observatory"]) == set(["a comment"])
 
-    astro_lab = EarthLocation(lat=1, lon=55, height=20)
-    astro_lab.name = "astro_lab"
-    target.evaluate_target(another_basic_scoring_function, astro_lab)
+    location = EarthLocation(lat=1, lon=55, height=20)
+    observer = Observer(location=location, name="astro_lab")
+    target.evaluate_target(another_basic_scoring_function, observer)
     assert set(target.score_history.keys()) == set(["no_observatory", "astro_lab"])
     assert len(target.score_history) == 2
     assert len(target.score_history["no_observatory"]) == 1
@@ -125,7 +133,7 @@ def test__get_last_score():
 
 def test__basic_model():
     test_model = BasicModel()
-    assert np.isclose(test_model.bandflux(), 5.7547e-4)
+    assert np.isclose(test_model.bandflux(None, 2459000.5), 5.7547e-4)
 
     def basic_modelling_function(target):
         return BasicModel()
@@ -181,3 +189,21 @@ def test__update_target_history():
     )
     assert all(not np.isfinite(x) for x in t2.target_history["sigmapsf"].values[:4])
     assert np.allclose(t2.target_history["sigmapsf"].values[4:], [0.1, 0.1, 0.1])
+
+
+def test__plotting():
+
+    ## TODO make this better...
+
+    objectId = "ZTF20acyvzbr"
+
+    target = Target.from_fink_query(objectId, withupperlim=True)
+    if target is None:
+        raise ValueError("fink query failed")
+    target.model_target(default_sncosmo_model)
+    t0 = Time(target.models[0]["t0"], format="jd")
+    lc_fig = target.plot_lightcurve(t_ref=t0)
+    assert isinstance(lc_fig, plt.Figure)
+
+    observatory = Observer.at_site("lapalma")
+    target.plot_observing_chart(observatory, t_ref=t0)

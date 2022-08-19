@@ -96,13 +96,13 @@ class FinkQuery:
         try:
             im_df = pd.read_json(im_req.content)
         except Exception as e:
-            logger.warn(f"on request for {imtype} stamp: {e}")
+            logger.warning(f"on request for {imtype} stamp: {e}")
             return None
 
         try:
             im = np.array(im_df[imtype_key].values[0], dtype=float)
         except:
-            logger.warn(f"on request for {imtype} stamp: {e}")
+            logger.warning(f"on request for {imtype} stamp: {e}")
             return None
 
         return im

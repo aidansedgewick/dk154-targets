@@ -27,16 +27,13 @@ def plot_observing_chart(observer: Observer, target: "Target"=None, t_ref=None):
     moon_altaz = observer.moon_altaz(time_grid)
     sun_altaz = observer.sun_altaz(time_grid)
 
-    print(moon_altaz.alt)
-
-    civil_night = observer.tonight(horizon=0*u.deg)
-    astro_night = observer.tonight(horizon=-18*u.deg)
-
+    civil_night = observer.tonight(t_ref, horizon=0*u.deg)
+    astro_night = observer.tonight(t_ref, horizon=-18*u.deg)
 
     ax.fill_between( # civil night
         timestamps, -90*u.deg, 90*u.deg, (sun_altaz.alt < 0*u.deg), color="0.9", 
     )
-    ax.fill_between( # civil night
+    ax.fill_between( # naval ??
         timestamps, -90*u.deg, 90*u.deg, (sun_altaz.alt < -6*u.deg), color="0.7", 
     )
     ax.fill_between( # civil night
@@ -54,7 +51,7 @@ def plot_observing_chart(observer: Observer, target: "Target"=None, t_ref=None):
 
 
     if target is not None:
-        target_altz = observer.altaz(time_grid, target.coord)
+        target_altaz = observer.altaz(time_grid, target.coord)
         ax.plot(timestamps, target_altaz.alt.deg, color="b", label="target")
 
         if all(target_altaz.alt < 30*u.deg):

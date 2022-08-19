@@ -47,7 +47,7 @@ class TargetSelector:
 
     default_target_list_dir = paths.base_path / "ranked_target_lists"
 
-    default_unranked_value = 99
+    default_unranked_value = 9999
 
     def __init__(self, selector_config):
 
@@ -134,10 +134,10 @@ class TargetSelector:
                 #observatory = EarthLocation(**obs_id)
                 location = EarthLocation(**obs_id)
             observatory = Observer(location=location, name=obs_name)
-            logger.info(f"initalise obs {obs_name}")
+            logger.info(f"initalise obs {observatory.name}")
             #observatory.name = obs_name
             self.observatories.append(observatory)
-        logger.info(f"init {len(self.observatories)}, inc. None (`no_observatory`)")
+        logger.info(f"{len(self.observatories)} obs (inc. `no_observatory` None)")
 
 
     def add_target(self, target: Target):
@@ -147,32 +147,63 @@ class TargetSelector:
         self.target_lookup[target.objectId] = target
 
 
-    def perform_query_manager_tasks(self):
+    def add_targets_from_df(self, target_list: pd.DataFrame, key="objectId", validate=True):
+        n_groups = len(np.unique(target_list[key]))
+        for ii, (objectId, target_history) in enumerate(target_list.groupby(key)):
+            logger.info(f"target {ii+1} of {n_groups}")
+            target = Target.from_target_history(
+                objectId, target_history
+            )
+            if validate and objectId in self.target_lookup:
+                # Already know about this one...
+                raise ValueError(f"validate=True, and target {objectId} already in targets.")
+            self.target_lookup[objectId] = target
+        return
+
+
+    def add_targets_from_objectId_list(self, objectId_list, chunk_size=20, **fink_kwargs):
+        if isinstance(objectId_list, str):
+            objectId_list = [objectId_list]
+        logger.info(f"initialise {len(objectId_list)} objects")
+        df_list = []
+        for ii, objectId_chunk in enumerate(chunk_list(objectId_list, size=chunk_size)):
+            objectId_str = ",".join(objId for objId in objectId_chunk)
+            df = FinkQuery.query_objects(return_df=True, objectId=objectId_str, **fink_kwargs)
+            
+            logger.info(f"chunk {ii+1} of {int(len(objectId_list)/chunk_size)+1} (n_rows={len(df)})")
+            df_list.append(df)
+        df = pd.concat(df_list)
+        self.add_targets_from_df(df)
+
+
+    def perform_query_manager_tasks(self, fake_alerts=False, dump_alerts=True):
         logger.info("perform all queries")
         if self.fink_query_manager is None:
             logger.warning("no fink query manager!")
-            #msg = (
-            #    "fink_query_manager is None"
-            #    "your selector_config should contain fink:\n"
-            #    "query_managers:\n  fink:\n    "
-            #    "username: <username>\n    group_id: <group-id>\n    servers\n"
-            #)
-            #raise ValueError("fink_query manager is None.")
         else:
-            self.fink_query_manager.perform_all_tasks()
+            self.fink_query_manager.perform_all_tasks(
+                fake_alerts=fake_alerts, dump_alerts=dump_alerts
+            )
 
 
     def evaluate_all_targets(
-        self, scoring_function: Callable, observatory: EarthLocation=None, t_ref: Time=None
+        self, scoring_function: Callable, observatory: Observer=None, t_ref: Time=None, **kwargs
     ):
         obs_name = getattr(observatory, "name", "no_observatory")
         if obs_name == "no_observatory":
             assert observatory is None
         t_ref = t_ref or Time.now()
+        if not isinstance(t_ref, Time):
+            raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
+
+        if "t_ref" not in kwargs:
+            kwargs["t_ref"] = t_ref
+        if observatory is not None:
+            kwargs["tonight"] = observatory.tonight(time=t_ref)
 
         logger.info(f"eval targets for {obs_name}")
         for objectId, target in self.target_lookup.items():
-            target.evaluate_target(scoring_function, observatory, t_ref=t_ref)
+            target.evaluate_target(scoring_function, observatory, **kwargs)
             assert obs_name in target.score_history
 
 
@@ -182,13 +213,17 @@ class TargetSelector:
             raw_score = target.get_last_score("no_observatory")
             if not np.isfinite(raw_score):
                 to_remove.append(objectId)
+        removed_targets = []
         for objectId in to_remove:
             target = self.target_lookup.pop(objectId)
             logger.info(f"rm {objectId}")
+            print(target.reject_comments)
+            removed_targets.append(target)
             assert objectId not in self.target_lookup
         if len(to_remove) > 0:
             logger.info(f"remove {len(to_remove)} targets")
-        return to_remove
+            assert len(removed_targets) == len(to_remove)
+        return removed_targets
         
 
     def model_targets(
@@ -209,7 +244,7 @@ class TargetSelector:
         logger.info("look for targets of opportunity")
         opp_target_path_list = list(self.targets_of_opportunity_path.glob("*.yaml"))
         targets_of_opportunity = []
-        logger.info(f"found {len(opp_target_path_list)} target yamls.")
+        logger.info(f"found {len(opp_target_path_list)} opp target yamls.")
         for opp_target_path in opp_target_path_list:
             with open(opp_target_path, "r") as f:
                 target_config = yaml.load(f, Loader=yaml.FullLoader)
@@ -258,7 +293,11 @@ class TargetSelector:
         if obs_name == "no_observatory":
             assert observatory is None
 
+        logger.info(f"build ranked list for {obs_name}")
+
         t_ref = t_ref or Time.now()
+        if not isinstance(t_ref, Time):
+            raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
 
         if output_dir is None:
             output_dir = self.target_list_dir #/ obs_name
@@ -275,16 +314,19 @@ class TargetSelector:
             target_data = dict(
                 objectId=objectId, ra=target.ra, dec=target.dec, score=score
             )
-            
             data_list.append(target_data)
+
+        if len(data_list) == 0:
+            logger.info(f"No targets for {obs_name}!")
+            return 
         target_list = pd.DataFrame(data_list)
         target_list.sort_values("score", inplace=True, ascending=False)
-        target_list.reset_index(inplace=True)
+        target_list.reset_index(inplace=True, drop=True)
 
         for ii, row in target_list.iterrows():
             target = self.target_lookup[row.objectId]
-            rank = ii + 1
-            target.rank_history[obs_name].append((rank, t_ref))
+            ranking = ii + 1
+            target.rank_history[obs_name].append((ranking, t_ref))
 
         target_list_path = output_dir / f"{obs_name}_ranked_list.csv"
         target_list.to_csv(target_list_path, index=True)
@@ -301,25 +343,44 @@ class TargetSelector:
             for ii, row in target_list.iterrows():
                 objectId = row["objectId"]
                 target = self.target_lookup[objectId]
-                lc_fig = target.plot_lightcurve()
+                if ii < 20:
+                    target.update_cutouts()
+                lc_fig = target.plot_lightcurve(t_ref=t_ref)
                 if lc_fig is not None:
                     lc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_lc{ext}"
                     lc_fig.savefig(lc_fig_path)
                     plt.close(lc_fig)
                 if observatory is None:
                     continue
-                oc_fig = target.plot_observing_chart(observatory)
+                try:
+                    oc_fig = target.plot_observing_chart(observatory, t_ref=t_ref)
+                except Exception as e:
+                    oc_fig = None
+                    logger.warning(e)
                 if oc_fig is not None:
                     oc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_oc{ext}"
                     oc_fig.savefig(oc_fig_path)
                     plt.close(oc_fig)
 
+    def dump_full_target_list(self, output_path=None):
+        if output_path is None:
+            output_path = self.default_full_target_history_path
+        df_list = []
+        for objectId, target in self.target_lookup.items():
+            df_list.append(target.target_history)
+        output = pd.concat(df_list)
+        output.to_csv(output_path, index=False)
+        logger.info("save all target_history")
+        return None
         
     def start(
         self, 
-        scoring_function: Callable, 
-        modelling_function: Callable, 
-        break_after_one=False, # ONLY USED FOR TESTING!
+        scoring_function: Callable=default_score, 
+        modelling_function: Callable=default_sncosmo_model, 
+        plots=True,
+        save_target_history=True,
+        target_history_path=None,
+        break_after_one=False, # ONLY USED FOR TESTING! to break from infinte loop.
     ):
         while True:
             self.perform_query_manager_tasks()
@@ -329,9 +390,11 @@ class TargetSelector:
                 self.evaluate_all_targets(scoring_function, observatory=observatory)
             logger.info(f"{len(self.target_lookup)} targets before removing bad targets")
             self.remove_bad_targets()
+            logger.info(f"{len(self.target_lookup)} targets after removing bad targets")
             for observatory in self.observatories:
-                self.build_ranked_target_list(observatory)
-
+                self.build_ranked_target_list(observatory, plots=plots)
+            if save_target_history:
+                self.dump_full_target_list(output_path=target_history_path)
             sleep_time = self.selector_config.get("sleep_time", 5.)
             logger.info(f"sleep for {sleep_time} sec")
             time.sleep(sleep_time)

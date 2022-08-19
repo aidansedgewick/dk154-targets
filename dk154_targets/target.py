@@ -17,10 +17,12 @@ from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval
 
+from astroplan import Observer
+
 #from dk154_targets.queries import FinkQuery, AtlasQueryManager
 from dk154_targets.queries import FinkQuery
 from dk154_targets.scoring import ScoringBadSignatureError, ScoringBadReturnValueError
-from dk154_targets.visibility_forecast import plot_observing_chart
+#from dk154_targets.visibility_forecast import plot_observing_chart
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -30,6 +32,7 @@ zscaler = ZScaleInterval()
 class Target:
 
     default_base_score = 100.
+    default_band_lookup = {1: "ztfg", 2: "ztfr"}
 
     def __init__(
         self, 
@@ -38,6 +41,7 @@ class Target:
         dec: float,
         target_history: pd.DataFrame=None,
         base_score: float=None,
+        band_lookup: dict=None,
     ):
         #===== basics
         self.objectId = objectId
@@ -45,17 +49,17 @@ class Target:
         self.dec = dec
         self.coord = SkyCoord(ra=ra, dec=dec, unit="deg")
         self.base_score = base_score or self.default_base_score
+        self.band_lookup = band_lookup or self.default_band_lookup
 
         #===== keep track of target data #- each should be a TargetData
         self.target_history = target_history
         self.cutouts = {}
-
-        self.visibility_forecasts = {}
+        self.cutout_update_time = None
 
         #===== models
         self.models = []
         self.updated = True
-        self.target_of_opportunity= False
+        self.target_of_opportunity = False
 
         #===== rank/score history
         self.score_history = {"no_observatory": []}
@@ -64,21 +68,43 @@ class Target:
         self.reject_comments = None
 
 
+    @classmethod
+    def from_fink_query(cls, objectId, ra=None, dec=None, base_score=None, **kwargs):
+        target_history = FinkQuery.query_objects(objectId=objectId, **kwargs)
+        if target_history is None:
+            logger.warn(f"no target history from {objectId}")
+            return None
+        if isinstance(target_history, pd.DataFrame) and target_history.empty:
+            return None
+        return cls.from_target_history(objectId, target_history, ra=ra, dec=dec, base_score=base_score)
+
+
+    @classmethod
+    def from_target_history(cls, objectId, target_history, ra=None, dec=None, base_score=None):
+        target_history.sort_values("jd", inplace=True)
+        if ra is None or dec is None:
+            ra = target_history["ra"].values[-1]
+            dec = target_history["dec"].values[-1]
+        target = cls(objectId, ra, dec, target_history=target_history, base_score=base_score)
+        return target
+
+
     def evaluate_target(
-        self, scoring_function: Callable, observatory: EarthLocation, t_ref: Time=None
+        self, scoring_function: Callable, observatory: EarthLocation, **kwargs
     ):
         obs_name = getattr(observatory, "name", "no_observatory")
         if obs_name == "no_observatory":
             assert observatory is None
-        t_ref = t_ref or Time.now()
-        
+        t_ref = kwargs.get("t_ref", Time.now()) 
+        if not isinstance(t_ref, Time):
+            raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
 
         scoring_function_message = (
             "`scoring_function` should accept two arguments `target` and `observatory` "
             "(which could be `None`), and should return float and optionally two lists of strings."
         )
 
-        scoring_result = scoring_function(self, observatory)
+        scoring_result = scoring_function(self, observatory, **kwargs)
         if isinstance(scoring_result, tuple):
             if len(scoring_result) != 3:
                 raise ValueError(scoring_function_message)
@@ -124,12 +150,15 @@ class Target:
     def model_target(self, modelling_function: Callable):
         model = modelling_function(self)
         if model is not None:
-            logger.info(f"model built for {self.objectId}")
+            #logger.info(f"{self.objectId} {type(model).__name__} model built")
             self.models.append(model)
             self.updated = True
+        else:
+            pass
+            #logger.warning()
 
 
-    def update_target_history(self, new_df, keep_old=True, date_col="jd",):
+    def update_target_history(self, new_df: pd.DataFrame, keep_old=True, date_col="jd",):
         """
         Concatenate new data to the existing target_history
 
@@ -148,8 +177,6 @@ class Target:
             default date_col=`jd`.
 
         """
-        print("current th:", self.objectId)
-        print(self.target_history)
 
         if self.target_history is None:
             self.target_history = new_df
@@ -163,86 +190,95 @@ class Target:
                 max_existing_date = self.target_history[date_col].max()
                 if keep_old:
                     existing_data = self.target_history
-                    print(new_df[date_col].min())
-                    print(new_df[date_col])
-                    print(existing_data["jd"])
-                    print(new_df["jd"] > max_existing_date)
                     new_data = new_df.query(f"{date_col} > @max_existing_date")
-                    print(len(new_data))
-                    print(new_data[date_col].min())
                     logger.info(f"{self.objectId} update: truncate update data")
                 else:
                     existing_data = self.target_history.query(f"{date_col} < @min_new_date")
+                    print(new_data["jd"])
                     new_data = new_df
-                print(existing_data[date_col].max(), new_data[date_col].min())
-                assert existing_data[date_col].max() < new_data[date_col].min()
+                if not existing_data[date_col].max() < new_data[date_col].min():
+                    print(
+                        f"existing max: {existing_data[date_col].max()}\n "
+                        f"new_min {new_data[date_col].min()}\n "
+                    )
+                    raise ValueError
                 target_history = pd.concat([existing_data, new_data])
                 self.target_history = target_history
 
         self.target_history.sort_values(date_col, inplace=True)
 
 
-    @classmethod
-    def from_fink_query(cls, objectId, ra=None, dec=None, base_score=None):
-        target_history = FinkQuery.query_objects(objectId=objectId)
-        if target_history is None:
-            logger.warn(f"no target history from {objectId}")
-            return None
-        if isinstance(target_history, pd.DataFrame) and target_history.empty:
-            return None
-        target_history.sort_values("jd", inplace=True)
-        if ra is None or dec is None:
-            ra = target_history["ra"].values[-1]
-            dec = target_history["dec"].values[-1]
-        target = cls(objectId, ra, dec, target_history=target_history, base_score=base_score)
-        return target
+    def update_cutouts(self, n_days=2):
+        """
+        Update the fink cutouts.
+        TODO: fink a better way to do this?? ie - ask the fink_query_manager to do it?
+        """
+        cutouts_are_None = any([im is None for im in self.cutouts.values()])
+        no_cutouts = len(self.cutouts) == 0
+        if self.cutout_update_time is None:
+            cutouts_are_old = True
+        else:
+            cutouts_are_old = Time.now() - self.cutout_update_time > n_days * u.day
+        if no_cutouts or cutouts_are_None or cutouts_are_old:
+            logger.info(f"update {self.objectId} cutouts")
+            for imtype in FinkQuery.imtypes:
+                im = FinkQuery.get_cutout(imtype, objectId=self.objectId)
+                self.cutouts[imtype] = im
+            self.cutout_update_time = Time.now()
 
 
-    def plot_lightcurve(self,):
-        try:
-            return plot_lightcurve(self)
-        except Exception as e:
-            logger.warning(f"NO LIGHTCURVE FOR {self.objectId}")
-            return None
+    def plot_lightcurve(self, t_ref=None):
+        #try:
+        logger.info(f"lc for {self.objectId}")
+        return plot_lightcurve(self, t_ref=t_ref)
+        #except Exception as e:
+        #    logger.warning(f"NO LIGHTCURVE FOR {self.objectId}")
+        #    print(e)
+        #    return None
 
 
-    def plot_observing_chart(self, observatory):
+    def plot_observing_chart(self, observatory: Observer, t_ref: Time=None):
+        obs_name = getattr(observatory, "name", "no_observatory")
+        logger.info(f"oc for {self.objectId} {obs_name}")
         if observatory is not None:
-            return plot_observing_chart(observatory)
+            return plot_observing_chart(observatory, self, t_ref=t_ref)
         return None
 
 
-def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
+def plot_lightcurve(target: Target, t_ref: Time=None):
 
     t_ref = t_ref or Time.now()
+    if not isinstance(t_ref, Time):
+        raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
     xlabel = f"time before now ({t_ref.datetime.strftime('%Y-%m-%d %H:%M')})"
 
     ##======== initialise figure
     fig = plt.figure(figsize=(8, 4.8))
     ax = fig.add_subplot(lc_gs[:,:-1])
 
-
+    if target.target_history is None:
+        logger.warning("{target.objectId} - no ")
+        return None
     full_detections = target.target_history
-    time_grid = np.arange(full_detections["jd"].min()-5., Time.now().jd + 5., 1.0)
+    time_grid = np.arange(full_detections["jd"].min()-5., t_ref.jd + 5., 1.0)
 
-
-    #for data_name, target_data in target.data.items():
+    band_lookup = target.band_lookup
 
     if not target.models:
         model = None
     else:
-        model = target.models[-1]
+        model = target.models[-1]    
 
     for ii, (fid, fid_history) in enumerate(target.target_history.groupby("fid")):
         fid_history.sort_values("jd", inplace=True)
         if "tag" in fid_history.columns:
             detections = fid_history.query("tag=='valid'")
-            ulimits = fid_history.query("tag==upperlim'")
-            badqual = fid_history.query("tag==badquality")
-            assert len(detections) + len(ulimits) + len(badqual) == len(target_history)
+            ulimits = fid_history.query("tag=='upperlim'")
+            badqual = fid_history.query("tag=='badquality'")
+            assert len(detections) + len(ulimits) + len(badqual) == len(fid_history)
             ax.errorbar(
                 ulimits["jd"].values - t_ref.jd, ulimits["diffmaglim"],
-                yerr=ulimits["sigmapsf"].values, 
+                yerr=None, 
                 ls="none", marker="v", color=f"C{ii}", mfc="none"
             )
             ax.errorbar(
@@ -250,7 +286,6 @@ def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
                 yerr=badqual["sigmapsf"].values, 
                 ls="none", marker="o", color=f"C{ii}", mfc="none"
             )
-
         else:
             detections = fid_history
         ax.errorbar(
@@ -260,11 +295,17 @@ def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
         )
         y_bright = detections["magpsf"].min()
 
+        
+
         #===== add models
         #for model in models:
         if model is None:
-            continue
-        model_flux = model.bandflux(band_lookup[fid], time_grid, zp=25., zpsys="ab")
+            continue # Still inside the fid loop...
+        #TODO: make this more "generic"? non-SN models might not have this function signature...
+        try:
+            model_flux = model.bandflux(band_lookup[fid], time_grid, zp=25., zpsys="ab")
+        except AttributeError as e:
+            logger.info("couldn't call `bandflux` on model... ")
         pos_mask = model_flux > 0
         model_mag = -2.5 * np.log10(model_flux[ pos_mask ]) + 8.9
         y_bright = min(y_bright, min(model_mag))
@@ -276,7 +317,13 @@ def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
     y_bright = min(y_bright - 0.2, 16.0)
     ax.set_ylim(22., y_bright)
     #ax.set_ylim(ax.get_ylim()[::-1])
-    ax.axvline(Time.now().jd-t_ref.jd, color="k")
+    ax.axvline(t_ref.jd-t_ref.jd, color="k")
+
+    title = f"{target.objectId}, ra={target.ra:.4f} dec={target.dec:.5f}"
+    ax.text(
+        0.5, 1.0, title, fontsize=14,
+        ha="center", va="bottom", transform=ax.transAxes
+    )
 
     ##======== add postage stamps
     for ii, imtype in enumerate(["Science", "Template", "Difference"]):
@@ -303,5 +350,86 @@ def plot_lightcurve(target: Target, t_ref: Time=None, cutouts="fink"):
         im_ax.plot([0.5 * xl_im, 0.5 * xl_im], [0.2*yl_im, 0.4*yl_im], color="r")
         im_ax.plot([0.2*yl_im, 0.4*yl_im], [0.5*yl_im, 0.5*yl_im], color="r")
     fig.tight_layout()
+
+    return fig
+
+
+def plot_observing_chart(observer: Observer, target: "Target"=None, t_ref=None):
+    t_ref = t_ref or Time.now()
+
+    fig, ax = plt.subplots()
+
+    time_grid = t_ref + np.linspace(0, 24, 24 * 4) * u.hour
+
+    timestamps = np.array([x.mjd for x in time_grid])
+
+    moon_altaz = observer.moon_altaz(time_grid)
+    sun_altaz = observer.sun_altaz(time_grid)
+
+    civil_night = observer.tonight(t_ref, horizon=0*u.deg)
+    astro_night = observer.tonight(t_ref, horizon=-18*u.deg)
+
+    ax.fill_between( # civil night
+        timestamps, -90*u.deg, 90*u.deg, (sun_altaz.alt < 0*u.deg), color="0.9", 
+    )
+    ax.fill_between( # naval ??
+        timestamps, -90*u.deg, 90*u.deg, (sun_altaz.alt < -6*u.deg), color="0.7", 
+    )
+    ax.fill_between( # civil night
+        timestamps, -90*u.deg, 90*u.deg, (sun_altaz.alt < -12*u.deg), color="0.4", 
+    )
+    ax.fill_between( # astronomical night
+        timestamps, -90*u.deg, 90*u.deg, sun_altaz.alt < -18*u.deg, color="0.3", 
+    )
+
+
+    ax.plot(timestamps, moon_altaz.alt.deg, color="0.5", ls="--", label="moon")
+    ax.plot(timestamps, sun_altaz.alt.deg, color="0.5", ls=":", label="sun")
+    ax.set_ylim(0, 90)
+    ax.set_ylabel("Altitude [deg]", fontsize=16)
+
+
+    if target is not None:
+        target_altaz = observer.altaz(time_grid, target.coord)
+        ax.plot(timestamps, target_altaz.alt.deg, color="b", label="target")
+
+        if all(target_altaz.alt < 30*u.deg):
+            ax.text(
+                0.5, 0.5, f"target alt never >30 deg", color="red", rotation=45,
+                ha="center", va="center", transform=ax.transAxes, fontsize=18
+            )
+
+    #obs_name = getattr(vf.observatory.info, "name", vf.obs_str) or vf.obs_str
+    obs_name = observer.name
+    title = f"Observing from {obs_name}"
+    title = title + f"\n starting at {t_ref.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    ax.text(
+        0.5, 1.0, title, fontsize=14,
+        ha="center", va="bottom", transform=ax.transAxes
+    )
+
+    iv = 3 # tick marker interval.
+    fiv = 24 / iv # interval fraction of day.
+
+    xticks = round(timestamps[0] * fiv, 0) / fiv + np.arange(0, 1, 1. / fiv)
+    hourmarks = [Time(x, format="mjd").datetime for x in xticks]
+    xticklabels = [hm.strftime("%H:%M") for hm in hourmarks]
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xticklabels)
+
+    ax.set_xlim(timestamps[0], timestamps[-1])
+
+    if target is not None:
+        ax2 = ax.twinx()
+        mask = target_altaz.alt > 10. * u.deg
+        airmass_time = timestamps[ mask ]
+        airmass = 1. / np.cos(target_altaz.zen[ mask ]).value
+        ax2.plot(airmass_time, airmass, color="red")
+        ax2.set_ylim(1.0, 4.0)
+        ax2.set_ylabel("Airmass", color="red", fontsize=14)
+        ax2.tick_params(axis='y', colors='red')
+        ax2.set_xlim(ax.get_xlim())
+
+    ax.legend()
 
     return fig

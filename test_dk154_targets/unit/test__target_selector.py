@@ -22,7 +22,7 @@ basic_config = {
         "fink": { 
             "username" :"test_user",
             "group_id": "user_group",
-            "server": "192.0.2.0",
+            "bootstrap.servers": "192.0.2.0",
         }
     }
 }
@@ -40,7 +40,7 @@ test_config = {
         "fink": {
             "username" :"test_user",
             "group_id": "user_group",
-            "server": "192.0.2.0",
+            "bootstrap.servers": "192.0.2.0",
             "topics": ["cool_space_targets"]
         },
     },
@@ -73,7 +73,7 @@ def test__init():
     assert isinstance(selector.fink_query_manager.credential_config, dict)
     assert (
         set(selector.fink_query_manager.credential_config.keys()) == 
-        set(["username", "group_id", "server"])
+        set(["username", "group_id", "bootstrap.servers"])
     )
     assert isinstance(selector.fink_query_manager.topics, list)
     assert set(selector.fink_query_manager.topics) == set(["cool_space_targets"])
@@ -138,7 +138,7 @@ def test__add_targets():
 
 
 def test__evaluate_all_targets():
-    def score_equal_ra(target, observatory):
+    def score_is_ra(target, observatory, **kwargs):
         return target.coord.ra.deg, [], []
 
     t1 = Target("t1", 0., 45.)
@@ -152,7 +152,7 @@ def test__evaluate_all_targets():
     assert set(ts.target_lookup.keys()) == set(["t1", "t2"])
 
     t_eval = Time.now()
-    ts.evaluate_all_targets(score_equal_ra) # use default "no_observatory"
+    ts.evaluate_all_targets(score_is_ra) # use default "no_observatory"
     assert len(t1.score_history["no_observatory"]) == 1
     assert np.isclose(t1.score_history["no_observatory"][0][0], 0.)
     t1_score_time = t1.score_history["no_observatory"][0][1]
@@ -175,7 +175,7 @@ def test__remove_bad_targets():
     ts.add_target(t3)
     ts.add_target(t4)
 
-    def reject_above_dec30(target, observatory):
+    def reject_above_dec30(target, observatory, **kwargs):
         if target.dec > 30:
             return np.nan, [], []
         else:
@@ -287,7 +287,7 @@ def test__targets_of_opportunity():
     f_list = ts.targets_of_opportunity_path.glob("*.yaml")
     assert sum([1 for f in f_list]) == 0 # The file has been deleted!
 
-    # Example with no objectID - should return None.
+    # Example with no objectId - should return None.
     opp_target2 = dict()
     opp_target2_path =  ts.targets_of_opportunity_path / "target_opp1.yaml"
     assert not opp_target2_path.exists()
@@ -318,7 +318,7 @@ def test__build_ranked_target_list():
     
     assert not expected_target_list_dir.exists()
 
-    def test_scoring_function(target, observatory):
+    def test_scoring_function(target, observatory, **kwargs):
         obs_factor = observatory.location.height.to("m").value if observatory is not None else 0.
 
         if target.dec < 30.0:
@@ -399,7 +399,7 @@ def test__start():
         "targets_of_opportunity_path": "test_dk154_targets/test_start_topp"
     }
 
-    def basic_score(target, observatory):
+    def basic_score(target, observatory, **kwargs):
         score = target.dec
         if observatory is not None:
             score = score * 2
@@ -447,7 +447,9 @@ def test__start():
         yaml.dump(dict(objectId="t6", ra=105., dec=-60.), f)
     assert topp2_path.exists()
 
-    ts.start(basic_score, build_basic_model, break_after_one=True)
+    ts.start(
+        basic_score, build_basic_model, 
+        break_after_one=True, plots=False, save_target_history=False)
     assert len(ts.target_lookup) == 4
     assert set(ts.target_lookup.keys()) == set(["t1", "t3", "t4", "t5"])
 
@@ -469,8 +471,8 @@ def test__start():
 
     assert np.isclose(ts.target_lookup["t4"].score_history["no_observatory"][0][0], -20)
     assert np.isclose(ts.target_lookup["t4"].score_history["lasilla"][0][0], -40.)
-    assert ts.target_lookup["t4"].rank_history["no_observatory"][0][0] == 99
-    assert ts.target_lookup["t4"].rank_history["lasilla"][0][0] == 99
+    assert ts.target_lookup["t4"].rank_history["no_observatory"][0][0] == 9999
+    assert ts.target_lookup["t4"].rank_history["lasilla"][0][0] == 9999
 
     assert np.isclose(ts.target_lookup["t5"].score_history["no_observatory"][0][0], 60.)
     assert np.isclose(ts.target_lookup["t5"].score_history["lasilla"][0][0], 120.)
@@ -480,6 +482,8 @@ def test__start():
 
     assert not topp1_path.exists()
     assert not topp2_path.exists()
+    topp_dir_expected.rmdir()
+    assert not topp_dir_expected.exists()
 
     no_obs_path = ranked_list_dir_expected / "no_observatory_ranked_list.csv"
     no_obs_list = pd.read_csv(no_obs_path)
@@ -492,4 +496,10 @@ def test__start():
 
     assert np.allclose(lasilla_list["score"].values, [800, 600, 120,])
     assert np.allclose(lasilla_list["ra"].values, [60., 30., 90.,])
-
+    
+    os.remove(no_obs_path)
+    assert not no_obs_path.exists()
+    os.remove(lasilla_path)
+    assert not lasilla_path.exists()
+    ranked_list_dir_expected.rmdir()
+    assert not ranked_list_dir_expected.exists()

@@ -20,12 +20,17 @@ logger = logging.getLogger("default_modelling")
 def default_sncosmo_model(target):
     band_lookup = {1: "ztfg", 2: "ztfr"}
 
+    if "tag" in target.target_history.columns:
+        detections = target.target_history.query("tag=='valid'")
+    else:
+        detections = target.target_history
+
     sncosmo_data = Table(
         dict(
-            time=target.target_history["jd"].values, # .values is an np array...
-            band=target.target_history["fid"].map(band_lookup).values,
-            mag=target.target_history["magpsf"].values,
-            magerr=target.target_history["sigmapsf"].values,
+            time=detections["jd"].values, # .values is an np array...
+            band=detections["fid"].map(band_lookup).values,
+            mag=detections["magpsf"].values,
+            magerr=detections["sigmapsf"].values,
         )
     )
 
@@ -52,7 +57,7 @@ def default_sncosmo_model(target):
                 bounds={'z':(0.005, 0.5)}
             )
         fitted_model.res = result
-        logger.info(f"model fit for {target.objectId}")
+        logger.info(f"{target.objectId} sncosmo model fit")
     except Exception as e:
         logger.warning(f"model fitting failed for {target.objectId}")
         fitted_model = None
