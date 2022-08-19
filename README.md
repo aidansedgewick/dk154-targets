@@ -72,7 +72,7 @@ objectId: ZTF22abcdef
 # ra: # these are optional if it's a ZTF target. Fink returns the ra, dec of the target.
 # dec:
 # base_score: 1000 # if your target is inherentely more interesting to a target.  
-
+```
 
 ### Scoring function
 
@@ -174,6 +174,7 @@ def build_sncosmo_model(target):
 
 selector = TargetSelector.from_config() # Reads from the default config file.
 selector.start(scoring_function=prefer_brightest_targets, modelling_function=build_sncosmo_model)
+
 ```
 
 
