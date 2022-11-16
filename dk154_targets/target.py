@@ -21,7 +21,7 @@ from astroplan import Observer
 
 #from dk154_targets.queries import FinkQuery, AtlasQueryManager
 from dk154_targets.queries import FinkQuery
-from dk154_targets.scoring import ScoringBadSignatureError, ScoringBadReturnValueError
+#from dk154_targets.scoring import ScoringBadSignatureError, ScoringBadReturnValueError
 #from dk154_targets.visibility_forecast import plot_observing_chart
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -51,8 +51,9 @@ class Target:
         self.base_score = base_score or self.default_base_score
         self.band_lookup = band_lookup or self.default_band_lookup
 
-        #===== keep track of target data #- each should be a TargetData
+        #===== keep track of target data 
         self.target_history = target_history
+        self.atlas_data = None
         self.cutouts = {}
         self.cutout_update_time = None
 
@@ -81,6 +82,7 @@ class Target:
 
     @classmethod
     def from_target_history(cls, objectId, target_history, ra=None, dec=None, base_score=None):
+        target_history = target_history.copy(deep=True)
         target_history.sort_values("jd", inplace=True)
         if ra is None or dec is None:
             ra = target_history["ra"].values[-1]
@@ -90,7 +92,7 @@ class Target:
 
 
     def evaluate_target(
-        self, scoring_function: Callable, observatory: EarthLocation, **kwargs
+        self, scoring_function: Callable, observatory: Observer, **kwargs
     ):
         obs_name = getattr(observatory, "name", "no_observatory")
         if obs_name == "no_observatory":
@@ -125,6 +127,7 @@ class Target:
             self.score_history[obs_name] = []
         assert obs_name in self.score_history
         self.score_history[obs_name].append((score, t_ref))
+        return score, score_comments, reject_comments
 
 
     def get_last_score(self, obs_name, return_time=False):
@@ -134,7 +137,10 @@ class Target:
             if obs_name == "no_observatory":
                 assert observatory is None
             else:
-                assert isisntance(observatory, EarthLocation)
+                assert isinstance(observatory, Observer)
+
+        if len(self.score_history[obs_name]) == 0:
+            return None
             
         if return_time:
             return self.score_history[obs_name][-1]
@@ -158,7 +164,9 @@ class Target:
             #logger.warning()
 
 
-    def update_target_history(self, new_df: pd.DataFrame, keep_old=True, date_col="jd",):
+    def update_target_history(
+        self, new_df: pd.DataFrame, keep_old=True, date_col="jd",
+    ):
         """
         Concatenate new data to the existing target_history
 
@@ -181,30 +189,57 @@ class Target:
         if self.target_history is None:
             self.target_history = new_df
             logger.info("no target_history, use new data")
-        else:
-            if new_df[date_col].min() > self.target_history[date_col].max():
-                logger.info(f"{self.objectId} update: simple concat")
-                self.target_history = pd.concat([self.target_history, new_df])
-            else:
-                min_new_date = new_df[date_col].min()
-                max_existing_date = self.target_history[date_col].max()
-                if keep_old:
-                    existing_data = self.target_history
-                    new_data = new_df.query(f"{date_col} > @max_existing_date")
-                    logger.info(f"{self.objectId} update: truncate update data")
-                else:
-                    existing_data = self.target_history.query(f"{date_col} < @min_new_date")
-                    print(new_data["jd"])
-                    new_data = new_df
-                if not existing_data[date_col].max() < new_data[date_col].min():
-                    print(
-                        f"existing max: {existing_data[date_col].max()}\n "
-                        f"new_min {new_data[date_col].min()}\n "
-                    )
-                    raise ValueError
-                target_history = pd.concat([existing_data, new_data])
-                self.target_history = target_history
+            self.target_history.sort_values(date_col, inplace=True)
+            return None
+            
+        if new_df[date_col].min() > self.target_history[date_col].max():
+            logger.info(f"{self.objectId} update: simple concat")
+            self.target_history = pd.concat([self.target_history, new_df])
+            self.target_history.sort_values(date_col, inplace=True)
+            return None
 
+        # the other case... where there is overlap between existing data and new data.
+
+        gt_min = self.target_history[date_col].min() <= new_df[date_col]
+        lt_max = new_df[date_col] <= self.target_history[date_col].max()
+
+        if all( gt_min.values & lt_max.values ):
+            if len(new_df) == 1:
+                # This is the case where the alert is 'old' and already included in the target_history.
+                is_close = np.isclose(
+                    new_df[date_col], self.target_history[date_col], atol=1./(60.*24.)
+                )
+                if any(is_close):
+                    logger.info(f"{self.objectId} alert data already in lc data")
+                    pass
+                else:
+                    raise ValueError("new data within existing data, but none are close date match")
+            else:
+                # This case something wrong has happened.
+                raise ValueError(f"new_df in date range but more than one alert: len={len(new_df)}")
+        else:
+            min_new_date = new_df[date_col].min()
+            max_existing_date = self.target_history[date_col].max()
+            if keep_old:
+                logger.info(f"{self.objectId} update: truncate update data")
+                existing_data = self.target_history
+                new_data = new_df.query(f"{date_col} > @max_existing_date")
+            else:
+                logger.info(f"{self.objectId} update: truncate existing data")
+                existing_data = self.target_history.query(f"{date_col} < @min_new_date")
+                print(new_data["jd"])
+                new_data = new_df
+            if not existing_data[date_col].max() < new_data[date_col].min():
+                print(
+                    f"existing max: {existing_data[date_col].max()}\n "
+                    f"new_min {new_data[date_col].min()}\n "
+                )
+                print("newdf datecol\n", new_df[date_col])
+                raise ValueError
+            target_history = pd.concat([existing_data, new_data])
+            self.target_history = target_history
+
+        self.updated = True
         self.target_history.sort_values(date_col, inplace=True)
 
 
@@ -227,10 +262,10 @@ class Target:
             self.cutout_update_time = Time.now()
 
 
-    def plot_lightcurve(self, t_ref=None):
+    def plot_lightcurve(self, t_ref=None, fig=None):
         #try:
         logger.info(f"lc for {self.objectId}")
-        return plot_lightcurve(self, t_ref=t_ref)
+        return plot_lightcurve(self, t_ref=t_ref, fig=fig)
         #except Exception as e:
         #    logger.warning(f"NO LIGHTCURVE FOR {self.objectId}")
         #    print(e)
@@ -245,7 +280,7 @@ class Target:
         return None
 
 
-def plot_lightcurve(target: Target, t_ref: Time=None):
+def plot_lightcurve(target: Target, t_ref: Time=None, fig=None):
 
     t_ref = t_ref or Time.now()
     if not isinstance(t_ref, Time):
@@ -253,8 +288,11 @@ def plot_lightcurve(target: Target, t_ref: Time=None):
     xlabel = f"time before now ({t_ref.datetime.strftime('%Y-%m-%d %H:%M')})"
 
     ##======== initialise figure
-    fig = plt.figure(figsize=(8, 4.8))
-    ax = fig.add_subplot(lc_gs[:,:-1])
+    if fig is None:
+        fig = plt.figure(figsize=(8, 4.8))
+        ax = fig.add_subplot(lc_gs[:,:-1])
+    else:
+        ax = fig.axes[0]
 
     if target.target_history is None:
         logger.warning("{target.objectId} - no ")
@@ -275,7 +313,12 @@ def plot_lightcurve(target: Target, t_ref: Time=None):
             detections = fid_history.query("tag=='valid'")
             ulimits = fid_history.query("tag=='upperlim'")
             badqual = fid_history.query("tag=='badquality'")
-            assert len(detections) + len(ulimits) + len(badqual) == len(fid_history)
+            
+            if not (len(detections) + len(ulimits) + len(badqual)) == len(fid_history):
+                logger.warning(
+                    f"len(det)+len(ulimits)+len(badqual) {len(det)}+{len(ulimits)}+{len(badqual)}"
+                    f" != len(df)={len(fid_history)}"
+                )
             ax.errorbar(
                 ulimits["jd"].values - t_ref.jd, ulimits["diffmaglim"],
                 yerr=None, 
@@ -313,6 +356,34 @@ def plot_lightcurve(target: Target, t_ref: Time=None):
         ax.axvline(model["t0"]-t_ref.jd, color="k", ls="--")
         ax.plot(model_time, model_mag, color=f"C{ii}")
 
+        if "samples" in model.res:
+            model_copy = copy.deepcopy(model)
+            param_dicts = [
+                {k: v} for params in model.res["samples"] for k, v in zip(
+                    model.res["vparam_names"], params
+                )
+            ]
+            lc_evaluations = []
+            for p_jj, params in enumerate(model.res["samples"][::50]):
+                pdict = {k: v for k, v in zip(model.res["vparam_names"], params)}
+                model_copy.update(pdict)
+                lc_flux_jj = model_copy.bandflux(band_lookup[fid], time_grid, zp=25., zpsys="ab")
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    lc_mag_jj = -2.5 * np.log10(lc_flux_jj[ pos_mask ]) + 8.9
+                lc_evaluations.append(lc_mag_jj)
+            lc_evaluations = np.vstack(lc_evaluations)
+
+            lc_bounds = np.nanquantile(lc_evaluations, q=[0.16, 0.84], axis=0)
+            ax.fill_between(model_time, lc_bounds[0,:], lc_bounds[1,:], color=f"C{ii}", alpha=0.2)
+            
+    if target.atlas_data is not None:
+        for band, full_band_lc in target.atlas_data.groupby("F"):
+            band_lc = full_band_lc.query("(duJy < uJy) & (m > 0) & (m < mag5sig)")
+            atlas_jd = Time(band_lc["MJD"].values, format="mjd").jd - t_ref.jd
+
+            ax.errorbar(atlas_jd, band_lc["m"], yerr=band_lc["dm"], marker="x")
+
+
     ax.set_xlabel(xlabel, fontsize=14)
     y_bright = min(y_bright - 0.2, 16.0)
     ax.set_ylim(22., y_bright)
@@ -327,7 +398,10 @@ def plot_lightcurve(target: Target, t_ref: Time=None):
 
     ##======== add postage stamps
     for ii, imtype in enumerate(["Science", "Template", "Difference"]):
-        im_ax = fig.add_subplot(lc_gs[ii:ii+1, -1:])
+        if len(fig.axes) == 4:
+            im_ax = fig.axes[ii+1]
+        else:
+            im_ax = fig.add_subplot(lc_gs[ii:ii+1, -1:])
 
         im_ax.set_xticks([])
         im_ax.set_yticks([])
@@ -354,7 +428,7 @@ def plot_lightcurve(target: Target, t_ref: Time=None):
     return fig
 
 
-def plot_observing_chart(observer: Observer, target: "Target"=None, t_ref=None):
+def plot_observing_chart(observer: Observer, target: Target=None, t_ref=None):
     t_ref = t_ref or Time.now()
 
     fig, ax = plt.subplots()

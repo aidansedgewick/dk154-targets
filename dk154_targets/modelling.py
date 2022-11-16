@@ -18,17 +18,21 @@ sfdq = sfd.SFDQuery()
 logger = logging.getLogger("default_modelling")
 
 def default_sncosmo_model(target):
-    band_lookup = {1: "ztfg", 2: "ztfr"}
+    ztf_band_lookup = {1: "ztfg", 2: "ztfr"}
+
+    logger.info(f"{target.objectId} fit sncosmo model")
 
     if "tag" in target.target_history.columns:
-        detections = target.target_history.query("tag=='valid'")
+        tag_query = "tag=='valid'"
+        detections = target.target_history.query(tag_query)
+        logger.info(f"use data {tag_query}")
     else:
         detections = target.target_history
 
     sncosmo_data = Table(
         dict(
             time=detections["jd"].values, # .values is an np array...
-            band=detections["fid"].map(band_lookup).values,
+            band=detections["fid"].map(ztf_band_lookup).values,
             mag=detections["magpsf"].values,
             magerr=detections["sigmapsf"].values,
         )
@@ -51,15 +55,21 @@ def default_sncosmo_model(target):
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result, fitted_model = sncosmo.fit_lc(
+            lsq_result, lsq_fitted_model = sncosmo.fit_lc(
                 sncosmo_data, model,
                 fitting_params,
                 bounds={'z':(0.005, 0.5)}
             )
+            result, fitted_model = sncosmo.mcmc_lc(
+                sncosmo_data, lsq_fitted_model,
+                fitting_params,
+                bounds={'z':(0.005, 0.5)}
+            )
+
         fitted_model.res = result
-        logger.info(f"{target.objectId} sncosmo model fit")
+        logger.info(f"sncosmo model fitting done")
     except Exception as e:
-        logger.warning(f"model fitting failed for {target.objectId}")
+        logger.warning(f"model fitting FAILED")
         fitted_model = None
         tr = traceback.format_exc()
         print(tr)

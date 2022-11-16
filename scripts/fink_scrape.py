@@ -1,3 +1,4 @@
+import time
 import logging
 import os
 
@@ -120,22 +121,31 @@ if not full_archive_df_path.exists():
 
     archive_df_list = []
     if len(missing_objectIds) > 0:
-        chunk_size = 20
+        chunk_size = 100
         for ii, objectId_chunk in enumerate(chunk_list(missing_objectIds, size=chunk_size)):
 
             objectId_str = ",".join(objId for objId in objectId_chunk)
+            logger.info(f"chunk {ii+1} of {int(len(missing_objectIds)/chunk_size)+1}")
+            t1 = time.perf_counter()
+            #try:
             df = FinkQuery.query_objects(
                 return_df=True, 
                 objectId=objectId_str,
                 withupperlim=True,
             )
+            #except Exception as e:
+            #    logger.warning("FAILED!")
+            #    continue
+            t2 = time.perf_counter()
+            logger.info(f"done (n_rows={len(df)}) in {t2-t1:.2f}s")
             
-            logger.info(f"chunk {ii+1} of {int(len(missing_objectIds)/chunk_size)+1} (n_rows={len(df)})")
             archive_df_list.append(df)
             for objectId, obj_df in df.groupby("objectId"):
                 assert objectId not in existing_objectIds
                 lightcurve_df_outpath = lightcurve_df_path / f"{objectId}.csv"
                 obj_df.to_csv(lightcurve_df_outpath, index=False)
+            logger.info("sleep")
+            time.sleep(20)
 
     for existing_path in existing_objectIds:
         lightcurve_df_outpath = lightcurve_df_path / f"{objectId}.csv"

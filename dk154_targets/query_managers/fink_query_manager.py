@@ -17,11 +17,13 @@ from dk154_targets import paths
 from dk154_targets.target import Target
 from dk154_targets.queries import FinkQuery
 
+from .generic_query_manager import GenericQueryManager
+
 from dk154_targets.utils import readstamp
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
-class FinkQueryManager:
+class FinkQueryManager(GenericQueryManager):
     
     name = "fink"
     default_num_alerts = 5
@@ -60,7 +62,7 @@ class FinkQueryManager:
                     for ii in range(num_alerts):
                         topic, alert, key = consumer.poll(timeout=timeout)
                         if any([x is None for x in [topic, alert, key]]):
-                            logger.info(f"break after {len(latest_alerts)}")
+                            logger.info(f"break after {len(latest_alerts)} alerts")
                             break
                         topic_counter[topic] = topic_counter[topic] + 1
                         latest_alerts.append( (topic, alert, key,) )
@@ -108,26 +110,25 @@ class FinkQueryManager:
 
                 alert_history = pd.DataFrame(alert["prv_candidates"])
                 if len(alert_history) == 0:
+                    logger.info(f"skip {objectId}, no alert_history")
                     continue
             else:
                 new_alert = alert
                 new_alert["topic"] = topic
-
-            #if all([x is None for x in alert_history["magpsf"]]):
-            #    prv_candidates = pd.DataFrame(alert["prv_candidates"])
-            #    logger.info("launch query")
-            #
-
 
             objectId = new_alert["objectId"]
 
             if objectId not in self.target_lookup:
                 try:
                     alert_history = FinkQuery.query_objects(
-                        objectId=alert["objectId"], return_df=True, fix_column_names=True
+                        objectId=alert["objectId"], 
+                        withupperlim=True,
+                        return_df=True, 
+                        fix_column_names=True
                     )
+                    logger.info(f"{objectId} query lc ")
                 except Exception as e:
-                    logger.warning(f"fink query failed on {objectId}")
+                    logger.warning(f"{objectId} fink query failed")
                 delta_t = new_alert.get("delta_t", None)
                 if delta_t is not None:
                     # This is useful for simulating alert streams...
@@ -139,7 +140,8 @@ class FinkQueryManager:
                     logger.info(f"skip {objectId}, len history={len(alert_history)}")
                     continue
 
-                logger.info(f"initialise target {objectId}")
+                logger.info(f"{objectId} initialise target")
+                """
                 if alert_history is not None:
                     new_alert_df = pd.DataFrame(new_alert, index=[len(alert_history)])
                     target_history = pd.concat(
@@ -149,21 +151,28 @@ class FinkQueryManager:
                 else:
                     logger.info("set target history only as alert")
                     target_history = pd.DataFrame(new_alert, index=0)
+                """
 
                 target = Target(
-                    objectId, new_alert["ra"], new_alert["dec"], target_history=target_history
+                    objectId, new_alert["ra"], new_alert["dec"], target_history=alert_history
                 )
                 self.target_lookup[objectId] = target
                 new_targets.append(objectId)
             else:
-                assert objectId in self.target_lookup # duh
-                logger.info(f"update target {objectId}")
-                target = self.target_lookup[objectId]
-                new_alert_df = pd.DataFrame(new_alert, index=[len(target.target_history)])
-                print(new_alert_df["jd"])
-                target.update_target_history(new_alert_df, keep_old=True)
                 updated_targets.append(objectId) # keep track of who we've updated.
+            assert objectId in self.target_lookup # we've just added it - it should be there...!
+            logger.info(f"{objectId} update target")
+            target = self.target_lookup[objectId]
+            if "tag" in target.target_history:
+                new_alert["tag"] = "valid"
 
+            new_alert_df = pd.DataFrame(new_alert, index=[len(target.target_history)])
+            alert_time = Time(new_alert['jd'], format="jd")
+            alert_time_str = alert_time.strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(f"alert jd = {alert_time.jd:.5f}")
+            logger.info(f"         = {alert_time_str}")
+            target.update_target_history(new_alert_df, keep_old=True)
+            print()
             for imtype in FinkQuery.imtypes:
                 target.cutouts[imtype] = readstamp(
                     alert.get('cutout'+imtype, {}).get('stampData', None)

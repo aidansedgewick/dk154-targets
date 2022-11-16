@@ -34,7 +34,10 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
     logger = logging.getLogger("default_score")
 
     jds = target.target_history['jd'].values
-    assert all(jds[:-1] <= jds[1:])
+    if not all(jds[:-1] <= jds[1:]):
+        print(f"objectId: {target.objectId}")
+        print(jds)
+        raise ValueError("jds not all in order...")
     # make sure they're in ascending order.
 
     t_ref = kwargs.get("t_ref", Time.now())
@@ -67,8 +70,8 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
 
 
     ###===== if it's way too faint =====###
-    last_mag = target.target_history["magpsf"].values[-1]
-    last_fid = target.target_history["fid"].values[-1]
+    last_mag = detections["magpsf"].values[-1]
+    last_fid = detections["fid"].values[-1]
     band_lookup = {1: "g", 2: "r"}
     last_band = band_lookup[last_fid]
     mag_factor = 10 ** ((18.5 - last_mag) / 2)
@@ -82,12 +85,16 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
 
 
     ###===== Is the target very old? ======###    
-    timespan = detections["jd"].max() - detections["jd"].min()
+    #timespan = detections["jd"].max() - detections["jd"].min()
+    timespan = t_ref.jd - detections["jd"].min()
     if timespan > 20.:
         timespan_factor = 1. / (timespan - 19.) # -19 means that t - 19 > 1 always.
         factors["timespan"] = timespan_factor
         score = score * timespan_factor
         score_comments.append(f"timespan {timespan:.1f} gives f={timespan_factor:.2f}")
+    if timespan > 35:
+        reject = True
+        reject_comments.append(f"target is {timespan:.2f} days old")
 
     
     ###===== Is the target still rising ======###
@@ -108,9 +115,10 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
     rstr = ','.join(f'{f:.2f}' for f in rising_fractions)
     score_comments.append(f"rising f={rstr}")
     score = score * rising_factor
-    if any([f < 0.4 for f in rising_fractions]):
+    rising_min = 0.4
+    if any([f < rising_min for f in rising_fractions]):
         reject = True
-        reject_comments.append("more than half declining...")
+        reject_comments.append(f"rising fractions {rstr} (N obs {N_obs})...")
 
 
     ###===== is there a model =====###
