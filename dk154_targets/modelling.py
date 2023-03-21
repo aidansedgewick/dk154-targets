@@ -1,6 +1,7 @@
 import logging
 import traceback
 import warnings
+import yaml
 
 import numpy as np
 
@@ -17,13 +18,20 @@ sfdq = sfd.SFDQuery()
 
 logger = logging.getLogger("default_modelling")
 
-def default_sncosmo_model(target):
+
+
+def default_sncosmo_model(target, **kwargs):
     ztf_band_lookup = {1: "ztfg", 2: "ztfr"}
+
+    use_mcmc = kwargs.get("use_mcmc", None)
+    if use_mcmc is None:
+        logger.info("'use_mcmc' not found in selector_config.modelling: set to False ")
+        use_mcmc = False
 
     logger.info(f"{target.objectId} fit sncosmo model")
 
     if "tag" in target.target_history.columns:
-        tag_query = "tag=='valid'"
+        tag_query = "(tag=='valid') or (tag=='badquality')"
         detections = target.target_history.query(tag_query)
         logger.info(f"use data {tag_query}")
     else:
@@ -32,12 +40,12 @@ def default_sncosmo_model(target):
     sncosmo_data = Table(
         dict(
             time=detections["jd"].values, # .values is an np array...
-            band=detections["fid"].map(ztf_band_lookup).values,
-            mag=detections["magpsf"].values,
-            magerr=detections["sigmapsf"].values,
+            #band=detections["band"].map(ztf_band_lookup).values,
+            band=detections["band"].values,
+            mag=detections["mag"].values,
+            magerr=detections["magerr"].values,
         )
     )
-
 
     sncosmo_data["flux"] = 10 ** (0.4 * (8.9 - sncosmo_data["mag"]))
     sncosmo_data["fluxerr"] = sncosmo_data["flux"] * sncosmo_data["magerr"] * np.log(10.) / 2.5
@@ -52,19 +60,36 @@ def default_sncosmo_model(target):
     model.set(mwebv=mwebv)
     fitting_params = model.param_names
     fitting_params.remove("mwebv")
+
+    # for known TNS redshifts...
+    known_redshift = target.tns_data.parameters.get("Redshift", None)
+    if known_redshift is not None:
+        logger.info(f"use known redshift z={known_redshift:.3f}")
+        model.set(z=known_redshift)
+        fitting_params.remove("z")
+        bounds = {}
+    else:
+        bounds = {'z':(0.005, 0.5)}
+
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             lsq_result, lsq_fitted_model = sncosmo.fit_lc(
                 sncosmo_data, model,
                 fitting_params,
-                bounds={'z':(0.005, 0.5)}
+                bounds=bounds
             )
-            result, fitted_model = sncosmo.mcmc_lc(
-                sncosmo_data, lsq_fitted_model,
-                fitting_params,
-                bounds={'z':(0.005, 0.5)}
-            )
+            if use_mcmc:
+                result, fitted_model = sncosmo.mcmc_lc(
+                    sncosmo_data, lsq_fitted_model,
+                    fitting_params,
+                    nsamples=5000,
+                    nwalkers=32,
+                    bounds=bounds
+                )
+            else:
+                fitted_model = lsq_fitted_model
+                result = lsq_result
 
         fitted_model.res = result
         logger.info(f"sncosmo model fitting done")

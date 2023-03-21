@@ -59,7 +59,7 @@ class FinkQuery:
     def query_latest_alerts(cls, return_df=True, fix_column_names=True, **kwargs):
         res = requests.post(cls.fink_latests_url, json=kwargs)
         if res.status_code != 200:
-            logger.warning(f"query_latest status {res.status_code}")
+            logger.warning(f"query_latest_alerts status {res.status_code}")
         return cls.process_response(res, return_df=True, fix_column_names=True)
 
 
@@ -67,7 +67,7 @@ class FinkQuery:
     def query_objects(cls, return_df=True, fix_column_names=True, **kwargs):
         res = requests.post(cls.fink_objects_url, json=kwargs)
         if res.status_code != 200:
-            logger.warning(f"query_latest status {res.status_code}")
+            logger.warning(f"query_objects status {res.status_code}")
         return cls.process_response(res, return_df=True, fix_column_names=True)
 
 
@@ -75,7 +75,7 @@ class FinkQuery:
     def query_database(cls, return_df=True, fix_column_names=True, **kwargs):
         res = requests.post(cls.fink_explorer_url, json=kwargs)
         if res.status_code != 200:
-            logger.warning(f"query_latest status {res.status_code}")
+            logger.warning(f"query_database status {res.status_code}")
         return cls.process_response(res, return_df=True, fix_column_names=True)
 
 
@@ -102,7 +102,7 @@ class FinkQuery:
         try:
             im = np.array(im_df[imtype_key].values[0], dtype=float)
         except:
-            logger.warning(f"on request for {imtype} stamp: {e}")
+            logger.warning(f"on {imtype} stamp np conversion: {e}")
             return None
 
         return im

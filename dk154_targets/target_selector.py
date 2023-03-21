@@ -20,11 +20,17 @@ from astropy.time import Time
 
 from astroplan import Observer
 
+
+
 from dk154_targets.modelling import default_sncosmo_model
 from dk154_targets.queries import FinkQuery
-from dk154_targets.query_managers import FinkQueryManager, AtlasQueryManager
+from dk154_targets.query_managers import (
+    FinkQueryManager, AlerceQueryManager, AtlasQueryManager, TNSQueryManager, GenericQueryManager
+)
 from dk154_targets.scoring import default_score
 from dk154_targets.target import Target
+from dk154_targets.telegram_bot import TelegramManager
+from dk154_targets.slack_bot import SlackManager
 from dk154_targets.utils import chunk_list, readstamp
 
 from dk154_targets import paths
@@ -42,10 +48,12 @@ class TargetSelector:
 
     default_selector_config_path = paths.config_path / "selector_config.yaml"
 
-    default_full_target_history_path = paths.base_path / "full_target_history.csv"
-    default_selector_pickle_path = paths.base_path / "latest_selector.pkl"
+    default_objectId_list_path = paths.outputs_path / "latest_objectIds.csv"
+    default_selector_pickle_path = paths.outputs_path / "latest_selector.pkl"
 
-    default_target_list_dir = paths.base_path / "ranked_target_lists"
+    default_targets_of_opportunity_path = paths.targets_of_opportunity_path
+
+    default_ranked_target_lists_path = paths.ranked_target_lists_path
 
     default_unranked_value = 9999
 
@@ -57,14 +65,15 @@ class TargetSelector:
         ###======== target "storage" ========###
         self.target_lookup = {}
 
-        ###======== target_list_path =========###
-        self.target_list_dir = Path(
-            self.selector_config.get(
-                "target_list_dir",
-                self.default_target_list_dir
-            )
-        )
-        self.target_list_dir.mkdir(exist_ok=True, parents=True)
+        ###======= ranked target lists ========###
+        ranked_list_path = self.selector_config.get("ranked_target_lists_path", None)
+        if ranked_list_path is None:
+            logger.warn("no 'ranked_target_lists_path' in config.")
+            logger.warn(f"default to {self.default_ranked_target_lists_path}")
+            self.ranked_target_lists_path = self.default_ranked_target_lists_path
+        else:
+            self.ranked_target_lists_path = Path(ranked_list_path).absolute()
+        self.ranked_target_lists_path.mkdir(exist_ok=True, parents=True)
 
         ###======== query managers ========###
         self.query_managers = {}
@@ -77,25 +86,32 @@ class TargetSelector:
         self.initialise_observatories()
 
         ###========== modelling details =======###
-        self.lazy_modelling = self.selector_config.get("lazy_modelling", True)
+        modelling_config = self.selector_config.get("modelling", None)
+        if modelling_config is None:
+            logger.warning("no 'modelling' in config!")
+        self.modelling_config = modelling_config or {}
+
+        self.lazy_modelling = self.modelling_config.get("lazy_modelling", True)
         assert isinstance(self.lazy_modelling, bool)
 
         ###======== target of opportunity =====###
-        self.targets_of_opportunity_path = Path(
-            self.selector_config.get(
-                "targets_of_opportunity_path", 
-                paths.base_path / "targets_of_opportunity"
-            )
-        ).absolute()
+        topp_path = self.selector_config.get("targets_of_opportunity_path", None)
+        if topp_path is None:
+            logger.warn("no 'targets_of_opportunity_path' in config.")
+            logger.warn(f"default to {self.default_targets_of_opportunity_path}")
+            self.targets_of_opportunity_path = self.default_targets_of_opportunity_path
+        else:
+            self.targets_of_opportunity_path = Path(topp_path).absolute()
         self.targets_of_opportunity_path.mkdir(exist_ok=True, parents=True)
 
+
         ###========== telegram_messenger ==========###
-        # todo add telegram messenger??
+        self.initialise_bots()
 
         ###=============== plotting ===============###
         plot_dir = self.selector_config.get("plotting_dir", None)
         if plot_dir is None:
-            self.plot_dir = paths.base_path / "plots"
+            self.plot_dir = paths.outputs_path / "plots"
         else:
             self.plot_dir = Path(plot_dir).absolute()
 
@@ -111,25 +127,51 @@ class TargetSelector:
 
     def initialise_query_managers(self,):
         """
-        Remember to call the tasks of your query manager in perform_query_manager_tasks()
+        If you add new query_managers...
+        remember to call the tasks of your query manager in perform_query_manager_tasks()
         """
 
-        
+        ### FINK ###
         fink_config = self.query_mananger_config.get("fink", None)
         if fink_config is None:
-            logger.warning("no fink_config! Set fink_query_manager to None.")
+            logger.warning("no fink_config! fink_query_manager=None")
             self.fink_query_manager = None
         else:
             logger.info("init FINK query manager...")
             self.fink_query_manager = FinkQueryManager(fink_config, self.target_lookup)
+        self.query_managers["fink"] = self.fink_query_manager
 
+        # ### ALERCE ###
+        alerce_config = self.query_mananger_config.get("alerce", None)
+        if alerce_config is None:
+            logger.warning("no alerce_config! alerce_query_manager=None")
+            self.alerce_query_manager = None
+        else:
+            logger.info("init ALERCE query manager...")
+            self.alerce_query_manager = AlerceQueryManager(alerce_config, self.target_lookup)
+        self.query_managers["alerce"] = self.alerce_query_manager
+
+        ### ATLAS ###
         atlas_config = self.query_mananger_config.get("atlas", None)
         if atlas_config is None:
-            logger.info("no atlas config")
+            logger.info("no atlas config. atlas_query_manager=None")
             self.atlas_query_manager = None
         else:
             logger.info("init ATLAS query manager...")
             self.atlas_query_manager = AtlasQueryManager(atlas_config, self.target_lookup)
+        self.query_managers["atlas"] = self.atlas_query_manager
+
+        ### TNS ###
+        tns_config = self.query_mananger_config.get("tns", None)
+        if tns_config is None:
+            logger.info("no tns config. tns_query_manager=None")
+            self.tns_query_manager = None
+        else:
+            logger.info("init TNS query manager...")
+            self.tns_query_manager = TNSQueryManager(tns_config, self.target_lookup)
+
+        self.query_managers["tns"] = self.tns_query_manager
+
 
         ##########################################################
         ## Remember to update perform_query_manager_tasks() !!! ##
@@ -148,7 +190,23 @@ class TargetSelector:
             logger.info(f"initalise obs {observatory.name}")
             #observatory.name = obs_name
             self.observatories.append(observatory)
-        logger.info(f"{len(self.observatories)} obs (inc. `no_observatory`:None)")
+        logger.info(f"{len(self.observatories)} observatories")
+        logger.info(f"    including `no_observatory`")
+
+
+    def initialise_bots(self,):
+        self.initialise_telegram_bot()
+        self.initialise_slack_bot()
+
+
+    def initialise_telegram_bot(self,):
+        telegram_config = self.selector_config.get("telegram", None)
+        self.telegram_manager = TelegramManager.from_config(telegram_config)
+
+    
+    def initialise_slack_bot(self,):
+        slack_config = self.selector_config.get("slack", None)
+        self.slack_manager = SlackManager.from_config(slack_config)
 
 
     def add_target(self, target: Target):
@@ -158,61 +216,61 @@ class TargetSelector:
         self.target_lookup[target.objectId] = target
 
 
-    def add_targets_from_df(self, target_list: pd.DataFrame, key="objectId", validate=True):
-        n_groups = len(np.unique(target_list[key]))
-        for ii, (objectId, target_history) in enumerate(target_list.groupby(key)):
-            if ii % 10 == 0:
-                logger.info(f"target {ii+1} of {n_groups}")
-            target = Target.from_target_history(
-                objectId, target_history
-            )
-            if validate and objectId in self.target_lookup:
-                # Already know about this one...
-                raise ValueError(f"validate=True, and target {objectId} already in targets.")
-            self.target_lookup[objectId] = target
-        return
+    #def add_targets_from_objectId_list(self, objectId_list):
 
 
-    def add_targets_from_objectId_list(self, objectId_list, chunk_size=20, **fink_kwargs):
-        if isinstance(objectId_list, str):
-            objectId_list = [objectId_list]
-        logger.info(f"initialise {len(objectId_list)} objects")
-        df_list = []
-        for ii, objectId_chunk in enumerate(chunk_list(objectId_list, size=chunk_size)):
-            objectId_str = ",".join(objId for objId in objectId_chunk)
-            df = FinkQuery.query_objects(return_df=True, objectId=objectId_str, **fink_kwargs)
-            
-            logger.info(f"chunk {ii+1} of {int(len(objectId_list)/chunk_size)+1} (n_rows={len(df)})")
-            df_list.append(df)
-        df = pd.concat(df_list)
-        self.add_targets_from_df(df)
+    def perform_query_manager_tasks(self, simulated_alerts=False, dump_alerts=True, t_ref=None):
+        t_ref = t_ref
 
-
-    def perform_query_manager_tasks(self, fake_alerts=False, dump_alerts=True):
         logger.info("perform all query manager tasks")
-        if self.fink_query_manager is None:
-            logger.warning("no fink query manager!")
-        else:
-            self.fink_query_manager.perform_all_tasks(
-                fake_alerts=fake_alerts, dump_alerts=dump_alerts
-            )
-        if self.atlas_query_manager is None:
-            pass
-        else:
-            self.atlas_query_manager.perform_all_tasks()
 
-    #def initial
+        # if self.fink_query_manager is None:
+        #     logger.warning("no fink query manager!")
+        # else:
+        #     self.fink_query_manager.perform_all_tasks(
+        #         simulated_alerts=simulated_alerts, dump_alerts=dump_alerts
+        #     )
+        # if self.alerce_query_manager is None:
+        #     logger.warning("no ALERCE query manager")
+        # else:
+        #     self.alerce_query_manager.perform_all_tasks()
+        # if self.atlas_query_manager is None:
+        #     pass
+        # else:
+        #     self.atlas_query_manager.perform_all_tasks()
+        # if self.tns_query_manager is None:
+        #     pass
+        # else:
+        #     self.tns_query_manager.perform_all_tasks()
+
+        for name, query_manager in self.query_managers.items():
+            if query_manager is None:
+                logger.info(f"no {name} query_manager")
+            else:
+                query_manager.perform_all_tasks(t_ref=t_ref)
+
+
+    def compile_all_target_histories(self, t_ref=None):
+        t_ref = t_ref or Time.now()
+        logger.info("compile photometric data...")
+        for objectId, target in self.target_lookup.items():
+            target.compile_target_history(t_ref=t_ref)
+        logger.info("done!")
+
 
     def initial_new_target_check(self, scoring_function: Callable, t_ref: Time=None):
-
         t_ref = t_ref or Time.now()
         to_remove = []
+        new_targets = []
         for objectId, target in self.target_lookup.items():
             last_score = target.get_last_score("no_observatory")
             if last_score is not None:
                 continue
             target.evaluate_target(scoring_function, None, t_ref=t_ref)
+            new_targets.append(objectId)
             initial_score = target.get_last_score("no_observatory")
+        return new_targets
+
 
     def evaluate_all_targets(
         self, 
@@ -238,7 +296,8 @@ class TargetSelector:
             target.evaluate_target(scoring_function, observatory, **kwargs)
             assert obs_name in target.score_history
 
-    def remove_bad_targets(self,):
+
+    def remove_bad_targets(self, verbose=True):
         to_remove = []
         for objectId, target in self.target_lookup.items():
             raw_score = target.get_last_score("no_observatory")
@@ -249,8 +308,9 @@ class TargetSelector:
         removed_targets = []
         for objectId in to_remove:
             target = self.target_lookup.pop(objectId)
-            logger.info(f"rm {objectId}")
-            print(target.reject_comments)
+            if verbose:
+                logger.info(f"rm {objectId}")
+                print(target.reject_comments)
             removed_targets.append(target)
             assert objectId not in self.target_lookup
         if len(to_remove) > 0:
@@ -263,17 +323,22 @@ class TargetSelector:
         self, modelling_function: Callable, lazy_modelling: bool=True
     ):
         if modelling_function is None:
+            logger.warn("modelling function is None!")
             return None
         logger.info(f"model {len(self.target_lookup)} targets")
         modelled = []
-        for objectId, target in self.target_lookup.items():
+        for ii, (objectId, target) in enumerate(self.target_lookup.items()):
             if not target.updated and lazy_modelling:
-                logger.info(f"{objectId} not updated: skip")
+                logger.debug(f"{objectId} no updates: skip")
                 continue
-            target.model_target(modelling_function)
-            target.updated = False
-        
+                
+            logger.info(f"modelling {ii+1} of {len(self.target_lookup)}")
+            model = modelling_function(target, **self.modelling_config)
+            if model is not None:
+                target.models.append(model)
+            #target.model_target(modelling_function)
 
+        
     def check_for_targets_of_opportunity(self, try_fink=True):
         logger.info("look for targets of opportunity")
         opp_target_path_list = list(self.targets_of_opportunity_path.glob("*.yaml"))
@@ -320,6 +385,16 @@ class TargetSelector:
             logger.info(f"add {len(targets_of_opportunity)} targets of opportunity")
 
 
+    def reset_updated_targets(self,):
+        for objectId, target in self.target_lookup.items():
+            target.updated = False
+
+
+    def reset_all_target_figures(self,):
+        for objectId, target in self.target_lookup.items():
+            target.reset_target_figures()
+
+
     def build_ranked_target_list(
         self, observatory=None, plots=True, save_list=True, output_dir=None, t_ref: Time=None
     ):
@@ -334,7 +409,7 @@ class TargetSelector:
             raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
 
         if output_dir is None:
-            output_dir = self.target_list_dir #/ obs_name
+            output_dir = self.ranked_target_lists_path #/ obs_name
         output_dir.mkdir(exist_ok=True, parents=True)
 
         data_list = []
@@ -378,9 +453,10 @@ class TargetSelector:
             for ii, row in target_list.iterrows():
                 objectId = row["objectId"]
                 target = self.target_lookup[objectId]
-                if ii < 20:
-                    target.update_cutouts()
-                lc_fig = target.plot_lightcurve(t_ref=t_ref)
+                if target.latest_lc_fig is None:
+                    lc_fig = target.plot_lightcurve(t_ref=t_ref)
+                else:
+                    lc_fig = target.latest_lc_fig
                 if lc_fig is not None:
                     lc_fig_path = obs_plot_dir / f"{ii:04d}_{objectId}_lc{ext}"
                     lc_fig.savefig(lc_fig_path)
@@ -399,17 +475,29 @@ class TargetSelector:
 
         return target_list
 
-    def dump_full_target_list(self, output_path=None):
-        if output_path is None:
-            output_path = self.default_full_target_history_path
-        df_list = []
+    def send_target_updates(self,):
+        logger.info("starting updates")
         for objectId, target in self.target_lookup.items():
-            df_list.append(target.target_history)
-        if len(df_list) == 0:
-            return
-        output = pd.concat(df_list)
-        output.to_csv(output_path, index=False)
-        logger.info("save all target_history")
+            if not target.updated:
+                continue
+            description = target.get_description()
+            if self.slack_manager is not None:                
+                scratch_lc_path = paths.scratch_path / f"{objectId}_lc.png"
+                if target.latest_lc_fig is not None:
+                    target.latest_lc_fig.savefig(scratch_lc_path)
+                    self.slack_manager.update_channels(text=description, files=[scratch_lc_path])
+
+
+
+    def dump_objectId_list(self, output_path=None):
+        if output_path is None:
+            output_path = self.default_objectId_list_path
+
+        objectId_list = []
+        for objectId, target in self.target_lookup.items():
+            objectId_list.append(objectId)
+        df = pd.DataFrame({"objectId": objectId_list})
+        df.to_csv(output_path, index=False)
         return None
         
     def start(
@@ -417,10 +505,10 @@ class TargetSelector:
         scoring_function: Callable=default_score, 
         modelling_function: Callable=default_sncosmo_model, 
         plots=True,
-        save_target_history=True,
-        target_history_path=None,
         break_after_one=False, # ONLY USED FOR TESTING! to break from infinte loop.
     ):
+        successful_loops = 0
+
         while True:
             ## get new data
             self.perform_query_manager_tasks()
@@ -428,10 +516,16 @@ class TargetSelector:
             ## are there any manually added targets?
             self.check_for_targets_of_opportunity()
 
+            ## concatenate all the useful photometric data from eg. FINK/ATLAS.
+            self.compile_all_target_histories()
+            
+            ## save all the targets currently care about
+            self.dump_objectId_list()
+
             ## are there any targets that aren't worth modelling?
             logger.info(f"{len(self.target_lookup)} targets before modelling")
             self.initial_new_target_check(scoring_function)
-            removed_before_modelling = self.remove_bad_targets()
+            removed_before_modelling = self.remove_bad_targets(verbose=False)
             logger.info(f"{len(removed_before_modelling)} not worth modelling")
 
             ## build target models
@@ -448,11 +542,16 @@ class TargetSelector:
             for observatory in self.observatories:
                 self.build_ranked_target_list(observatory, plots=plots)
 
-            ## save all the targets currently care about
-            if save_target_history:
-                self.dump_full_target_list(output_path=target_history_path)
-            sleep_time = self.selector_config.get("sleep_time", 5.)
+            if successful_loops > 0:
+                self.send_target_updates()
+
+            ## set all target.updated = False
+            self.reset_updated_targets()
+            self.reset_all_target_figures()
+
+            sleep_time = self.selector_config.get("sleep_time", 600.)
             logger.info(f"sleep for {sleep_time} sec")
             time.sleep(sleep_time)
             if break_after_one:
                 break
+            successful_loops = successful_loops + 1

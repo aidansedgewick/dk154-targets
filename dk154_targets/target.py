@@ -5,7 +5,9 @@ import traceback
 #from dataclasses import dataclass # >=py3.7 only!
 import warnings
 from collections import defaultdict
+from pathlib import Path
 from typing import Callable
+
 
 import numpy as np
 import pandas as pd
@@ -19,29 +21,49 @@ from astropy.visualization import ZScaleInterval
 
 from astroplan import Observer
 
-#from dk154_targets.queries import FinkQuery, AtlasQueryManager
 from dk154_targets.queries import FinkQuery
-#from dk154_targets.scoring import ScoringBadSignatureError, ScoringBadReturnValueError
-#from dk154_targets.visibility_forecast import plot_observing_chart
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 lc_gs = plt.GridSpec(3,4)
 zscaler = ZScaleInterval()
 
+class TargetData:
+    def __init__(
+        self, 
+        lightcurve: pd.DataFrame=None, 
+        probabilities: pd.DataFrame=None, 
+        parameters: dict=None, 
+        cutouts: dict=None, 
+        meta: dict=None
+    ):
+        self.lightcurve = lightcurve
+        self.probabilities = probabilities
+        self.parameters = parameters or {}
+        self.cutouts = cutouts or {}
+        self.meta = dict(
+            #lightcurve_update_time=None,
+            #probabilities_update_time=None,
+            #parameters_update_time=None,
+            #cutout_update_time=None, 
+        )
+        meta = meta or {}
+        self.meta.update(meta)
+
 class Target:
 
     default_base_score = 100.
-    default_band_lookup = {1: "ztfg", 2: "ztfr"}
 
     def __init__(
         self, 
         objectId: str, 
         ra: float, 
         dec: float,
-        target_history: pd.DataFrame=None,
+        fink_lightcurve: pd.DataFrame=None,
+        alerce_lightcurve: pd.DataFrame=None,
+        alerce_probabilities = None,
         base_score: float=None,
-        band_lookup: dict=None,
+        meta: dict=None,
     ):
         #===== basics
         self.objectId = objectId
@@ -49,13 +71,20 @@ class Target:
         self.dec = dec
         self.coord = SkyCoord(ra=ra, dec=dec, unit="deg")
         self.base_score = base_score or self.default_base_score
-        self.band_lookup = band_lookup or self.default_band_lookup
+
+        if (not np.isfinite(self.ra)) or (not np.isfinite(self.dec)):
+            raise ValueError(f"ra and dec should not be {self.ra}, {self.dec}")
 
         #===== keep track of target data 
-        self.target_history = target_history
-        self.atlas_data = None
-        self.cutouts = {}
-        self.cutout_update_time = None
+        self.fink_data = TargetData(lightcurve=fink_lightcurve)
+        self.alerce_data = TargetData(lightcurve=alerce_lightcurve, probabilities=alerce_probabilities)
+        self.atlas_data = TargetData()
+        self.tns_data = TargetData()
+
+        #self.cutouts = {}
+        #self.cutout_update_time = None
+
+        self.target_history = self.compile_target_history()
 
         #===== models
         self.models = []
@@ -65,31 +94,81 @@ class Target:
         #===== rank/score history
         self.score_history = {"no_observatory": []}
         self.rank_history = {"no_observatory": []}
+        self.reset_target_figures()
         self.last_score_comments = {}
         self.reject_comments = None
+
+        #===== meta
+        meta = meta or {}
+        self.meta = {
+            "init_time": Time.now()
+        }
+        self.meta.update(meta)
+
+        logger.debug(f"{self.objectId} initalised")
 
 
     @classmethod
     def from_fink_query(cls, objectId, ra=None, dec=None, base_score=None, **kwargs):
-        target_history = FinkQuery.query_objects(objectId=objectId, **kwargs)
-        if target_history is None:
-            logger.warn(f"no target history from {objectId}")
+        fink_lightcurve = FinkQuery.query_objects(objectId=objectId, **kwargs)
+        if fink_lightcurve is None:
+            logger.warn(f"no fink_lightcurve {objectId} query")
             return None
-        if isinstance(target_history, pd.DataFrame) and target_history.empty:
+        if isinstance(fink_lightcurve, pd.DataFrame) and fink_lightcurve.empty:
+            logger.warning(f"fink data is None")
             return None
-        return cls.from_target_history(objectId, target_history, ra=ra, dec=dec, base_score=base_score)
+        return cls.from_fink_lightcurve(
+            objectId, fink_lightcurve, ra=ra, dec=dec, base_score=base_score
+        )
 
 
     @classmethod
-    def from_target_history(cls, objectId, target_history, ra=None, dec=None, base_score=None):
-        target_history = target_history.copy(deep=True)
-        target_history.sort_values("jd", inplace=True)
+    def from_fink_lightcurve(
+        cls, objectId, fink_lightcurve, ra=None, dec=None, base_score=None
+    ):
+        if isinstance(fink_lightcurve, str) or isinstance(fink_lightcurve, Path):
+            logger.info(f"interpret {fink_lightcurve} as path")
+            fink_lightcurve = pd.read_csv(fink_lightcurve)
+
+        fink_lightcurve = fink_lightcurve.copy(deep=True)
+        fink_lightcurve.sort_values("jd", inplace=True)
+        if "tag" in fink_lightcurve.columns:
+            detections = fink_lightcurve.query("tag=='valid'")
+        else:
+            detections = fink_lightcurve
+        if detections.empty:
+            logger.warning(f"init {objectId}: no valid detections!")
+            return None
         if ra is None or dec is None:
-            ra = target_history["ra"].values[-1]
-            dec = target_history["dec"].values[-1]
-        target = cls(objectId, ra, dec, target_history=target_history, base_score=base_score)
+            ra = fink_lightcurve["ra"].dropna().values[-1]
+            dec = fink_lightcurve["dec"].dropna().values[-1]
+        if (not np.isfinite(ra)) or (not np.isfinite(dec)):
+            logger.warning(f"ra and dec should not be {ra}, {dec}")
+            return None
+        target = cls(objectId, ra, dec, fink_lightcurve=fink_lightcurve, base_score=base_score)
         return target
 
+    @classmethod
+    def from_alerce_lightcurve(
+        cls, objectId, alerce_lightcurve, ra=None, dec=None, base_score=None
+    ):
+        alerce_lightcurve = alerce_lightcurve.copy(deep=True)
+        alerce_lightcurve.sort_values("jd", inplace=True)
+        if "tag" in alerce_lightcurve.columns:
+            detections = alerce_lightcurve.query("tag=='valid'")
+        else:
+            detections = alerce_lightcurve
+        if detections.empty:
+            logger.warning(f"init {objectId}: no valid detections")
+            return None
+        if ra is None or dec is None:
+            ra = alerce_lightcurve["ra"].dropna().values[-1]
+            dec = alerce_lightcurve["dec"].dropna().values[-1]
+        if (not np.isfinite(ra)) or (not np.isfinite(dec)):
+            logger.warning(f"ra and dec should not be {ra}, {dec}")
+            return None
+        target = cls(objectId, ra, dec, alerce_lightcurve=alerce_lightcurve, base_score=base_score)
+        return target
 
     def evaluate_target(
         self, scoring_function: Callable, observatory: Observer, **kwargs
@@ -147,125 +226,107 @@ class Target:
         else:
             return self.score_history[obs_name][-1][0]
 
-    #def get_last_magnitude(self, data="fink", fid=None)
-    #    target_data = target.data[data]
-    #    if fid is not None:
-    #        fid.
 
-
-    def model_target(self, modelling_function: Callable):
-        model = modelling_function(self)
-        if model is not None:
-            #logger.info(f"{self.objectId} {type(model).__name__} model built")
-            self.models.append(model)
-            self.updated = True
-        else:
-            pass
-            #logger.warning()
-
-
-    def update_target_history(
-        self, new_df: pd.DataFrame, keep_old=True, date_col="jd",
-    ):
-        """
-        Concatenate new data to the existing target_history
-
-        Parameters
-        ----------
-        new_df
-            new data to include in target
-        keep_old
-            if the earliest data in the new data is older than the last data in the 
-            existing target_history, we need to decide whether to truncate the old 
-            data or new to avoid inluding repeat observations.
-            By default, truncate the new data to only include observations after the
-            last data (`keep_old=True` default.)
-        date_col
-            The column used to truncate either the `target_history` or the `new_df`.
-            default date_col=`jd`.
-
-        """
-
-        if self.target_history is None:
-            self.target_history = new_df
-            logger.info("no target_history, use new data")
-            self.target_history.sort_values(date_col, inplace=True)
-            return None
-            
-        if new_df[date_col].min() > self.target_history[date_col].max():
-            logger.info(f"{self.objectId} update: simple concat")
-            self.target_history = pd.concat([self.target_history, new_df])
-            self.target_history.sort_values(date_col, inplace=True)
-            return None
-
-        # the other case... where there is overlap between existing data and new data.
-
-        gt_min = self.target_history[date_col].min() <= new_df[date_col]
-        lt_max = new_df[date_col] <= self.target_history[date_col].max()
-
-        if all( gt_min.values & lt_max.values ):
-            if len(new_df) == 1:
-                # This is the case where the alert is 'old' and already included in the target_history.
-                is_close = np.isclose(
-                    new_df[date_col], self.target_history[date_col], atol=1./(60.*24.)
-                )
-                if any(is_close):
-                    logger.info(f"{self.objectId} alert data already in lc data")
-                    pass
+    def get_description(self, t_ref: Time=None):
+        t_ref = t_ref or Time.now()
+        
+        msg_components = [
+            f"{self.objectId}\n",
+            f"ra={self.ra:.6f} dec={self.dec:.5f}",
+        ]
+        if self.target_history is not None:
+            N_obs = {}
+            for band, band_history in self.target_history.groupby("band"):
+                if "tag" in band_history:
+                    band_detections = band_history.query("(tag=='valid') or (tag=='badquality')")
                 else:
-                    raise ValueError("new data within existing data, but none are close date match")
-            else:
-                # This case something wrong has happened.
-                raise ValueError(f"new_df in date range but more than one alert: len={len(new_df)}")
-        else:
-            min_new_date = new_df[date_col].min()
-            max_existing_date = self.target_history[date_col].max()
-            if keep_old:
-                logger.info(f"{self.objectId} update: truncate update data")
-                existing_data = self.target_history
-                new_data = new_df.query(f"{date_col} > @max_existing_date")
-            else:
-                logger.info(f"{self.objectId} update: truncate existing data")
-                existing_data = self.target_history.query(f"{date_col} < @min_new_date")
-                print(new_data["jd"])
-                new_data = new_df
-            if not existing_data[date_col].max() < new_data[date_col].min():
-                print(
-                    f"existing max: {existing_data[date_col].max()}\n "
-                    f"new_min {new_data[date_col].min()}\n "
-                )
-                print("newdf datecol\n", new_df[date_col])
-                raise ValueError
-            target_history = pd.concat([existing_data, new_data])
-            self.target_history = target_history
+                    band_detections = band_history
+                N_obs[band] = len(band_detections)
+            detection_str = f"detections: " + " ".join(f"{band}={N}" for band, N in N_obs.items())
+            msg_components.append(detection_str)
+        msg_components.append(f"https://fink-portal.org/{self.objectId}")
 
-        self.updated = True
-        self.target_history.sort_values(date_col, inplace=True)
+        description = "\n".join(msgc for msgc in msg_components)
+        return description
+        
+
+    def compile_target_history(
+        self, ztf_source_priority=("fink", "alerce", ), t_ref=None,
+    ):
+        t_ref = t_ref or Time.now()
+
+        ztf_band_lookup = {1: "ztfg", 2: "ztfr"}
+
+        df_list = []
+
+        ### sort ztf data
+        #ztf_source = None
+        for ztf_source in ztf_source_priority:
+            source_data = getattr(self, f"{ztf_source}_data", None)
+            if source_data is None:
+                raise ValueError(f"{ztf_source} data should not be None!")
+            ztf_lightcurve = source_data.lightcurve
+            if ztf_lightcurve is not None:
+                if not ztf_lightcurve.empty:
+                    break
+
+        if ztf_source == "fink":
+            use_fink_cols = ["jd", "magpsf", "sigmapsf", "tag", "diffmaglim"]
+            fink_cols = [c for c in use_fink_cols if c in self.fink_data.lightcurve.columns]
+            fink_rename = {"magpsf": "mag", "sigmapsf": "magerr", "fid": "band"}
+            with pd.option_context('mode.chained_assignment', None):
+                fink_df = self.fink_data.lightcurve[fink_cols]
+                fink_df.loc[:,"band"] = self.fink_data.lightcurve["fid"].map(ztf_band_lookup)
+                fink_df.rename(fink_rename, axis=1, inplace=True)
+                df_list.append(fink_df)
+        elif ztf_source == "alerce":
+            use_alerce_cols = ["jd", "magpsf", "sigmapsf", "tag", "diffmaglim"]
+            alerce_cols = [c for c in use_alerce_cols if c in self.alerce_data.lightcurve.columns]
+            alerce_rename = {"magpsf": "mag", "sigmapsf": "magerr", "fid": "band"}
+            with pd.option_context('mode.chained_assignment', None):
+                alerce_df = self.alerce_data.lightcurve[alerce_cols]
+                alerce_df.loc[:,"band"] = self.alerce_data.lightcurve["fid"].map(ztf_band_lookup)
+                alerce_df.rename(alerce_rename, axis=1, inplace=True)
+                df_list.append(alerce_df)
 
 
-    def update_cutouts(self, n_days=2):
-        """
-        Update the fink cutouts.
-        TODO: fink a better way to do this?? ie - ask the fink_query_manager to do it?
-        """
-        cutouts_are_None = any([im is None for im in self.cutouts.values()])
-        no_cutouts = len(self.cutouts) == 0
-        if self.cutout_update_time is None:
-            cutouts_are_old = True
-        else:
-            cutouts_are_old = Time.now() - self.cutout_update_time > n_days * u.day
-        if no_cutouts or cutouts_are_None or cutouts_are_old:
-            logger.info(f"update {self.objectId} cutouts")
-            for imtype in FinkQuery.imtypes:
-                im = FinkQuery.get_cutout(imtype, objectId=self.objectId)
-                self.cutouts[imtype] = im
-            self.cutout_update_time = Time.now()
+        ### sort atlas data
+        with pd.option_context('mode.chained_assignment', None):
+            if self.atlas_data.lightcurve is not None and (not self.atlas_data.lightcurve.empty):
+                atlas_band_lookup = {"o": "atlaso", "c": "atlasc"}
+
+                atlas_cols = ["m", "dm", "mag5sig"]
+                atlas_rename = {"m": "mag", "dm": "magerr", "mag5sig": "diffmaglim"}
+                full_atlas_df = self.atlas_data.lightcurve[atlas_cols]
+                full_atlas_df.reset_index(drop=True, inplace=True)
+                full_atlas_df.loc[:,"band"] = self.atlas_data.lightcurve["F"].map(atlas_band_lookup)
+                full_atlas_df.loc[:,"jd"] = Time(self.atlas_data.lightcurve["MJD"].values, format="mjd").jd
+
+                # know snr~1/dm
+
+                atlas_df = full_atlas_df.query("m > 0")
+                atlas_df.reset_index(drop=True, inplace=True)
+                tag_data = np.full(len(atlas_df), 'valid', dtype="object")
+                # badqual_mask = (atlas_df["m"] < 0.)
+                # tag_data[ badqual_mask ] = 'badquality'
+                upperlim_mask = (atlas_df["m"] > atlas_df["mag5sig"])
+                tag_data[ upperlim_mask ] = 'upperlim'
+                atlas_df.loc[:,"tag"] = pd.Series(tag_data)
+
+                atlas_df.rename(atlas_rename, axis=1, inplace=True)
+                df_list.append(atlas_df)
+
+        target_history = pd.concat(df_list)
+        self.target_history = target_history.query(f"jd < @t_ref.jd")
+        return
 
 
     def plot_lightcurve(self, t_ref=None, fig=None):
         #try:
         logger.info(f"lc for {self.objectId}")
-        return plot_lightcurve(self, t_ref=t_ref, fig=fig)
+        lc_fig = plot_lightcurve(self, t_ref=t_ref, fig=fig)
+        self.latest_lc_fig = lc_fig
+        return lc_fig
         #except Exception as e:
         #    logger.warning(f"NO LIGHTCURVE FOR {self.objectId}")
         #    print(e)
@@ -279,13 +340,24 @@ class Target:
             return plot_observing_chart(observatory, self, t_ref=t_ref)
         return None
 
+    def reset_target_figures(self,):
+        self.latest_lc_fig = None
+        self.latest_oc_figs = []
 
-def plot_lightcurve(target: Target, t_ref: Time=None, fig=None):
+
+def plot_lightcurve(
+    target: Target, t_ref: Time=None, fig=None, forecast_days=5., **kwargs
+):
 
     t_ref = t_ref or Time.now()
     if not isinstance(t_ref, Time):
         raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
-    xlabel = f"time before now ({t_ref.datetime.strftime('%Y-%m-%d %H:%M')})"
+    xlabel = kwargs.get(
+        "xlabel", 
+        f"time before now ({t_ref.datetime.strftime('%Y-%m-%d %H:%M')})"
+    )
+    
+
 
     ##======== initialise figure
     if fig is None:
@@ -298,99 +370,136 @@ def plot_lightcurve(target: Target, t_ref: Time=None, fig=None):
         logger.warning("{target.objectId} - no ")
         return None
     full_detections = target.target_history
-    time_grid = np.arange(full_detections["jd"].min()-5., t_ref.jd + 5., 1.0)
-
-    band_lookup = target.band_lookup
+    time_grid = np.arange(full_detections["jd"].min()-5., t_ref.jd + forecast_days, 1.0)
 
     if not target.models:
         model = None
     else:
         model = target.models[-1]    
+        
+    brightest_values = [] # so we can adjust the axes ylimit if we need.
+    legend_handles = []
 
-    for ii, (fid, fid_history) in enumerate(target.target_history.groupby("fid")):
-        fid_history.sort_values("jd", inplace=True)
-        if "tag" in fid_history.columns:
-            detections = fid_history.query("tag=='valid'")
-            ulimits = fid_history.query("tag=='upperlim'")
-            badqual = fid_history.query("tag=='badquality'")
-            
-            if not (len(detections) + len(ulimits) + len(badqual)) == len(fid_history):
-                logger.warning(
-                    f"len(det)+len(ulimits)+len(badqual) {len(det)}+{len(ulimits)}+{len(badqual)}"
-                    f" != len(df)={len(fid_history)}"
-                )
-            ax.errorbar(
-                ulimits["jd"].values - t_ref.jd, ulimits["diffmaglim"],
-                yerr=None, 
-                ls="none", marker="v", color=f"C{ii}", mfc="none"
-            )
-            ax.errorbar(
-                badqual["jd"].values - t_ref.jd, badqual["magpsf"],
-                yerr=badqual["sigmapsf"].values, 
-                ls="none", marker="o", color=f"C{ii}", mfc="none"
-            )
+    color_lookup = {"ztfg": "C0", "ztfr": "C1", "atlasc": "C2", "atlaso": "C3"}
+    for ii, (band, band_history) in enumerate(target.target_history.groupby("band")):
+        band_history.sort_values("jd", inplace=True)
+        band_color = color_lookup.get(band, ii+len(color_lookup))
+        label = f"{band[:-1].upper()}-" + r"$" + band[-1] + "$"
+        if band.startswith("ztf"):
+            zorder = 10
+            alpha = 1.0
+            ms=6
         else:
-            detections = fid_history
-        ax.errorbar(
-            detections["jd"].values - t_ref.jd, detections["magpsf"],
-            yerr=detections["sigmapsf"].values, 
-            ls="none", marker="o", color=f"C{ii}"
-        )
-        y_bright = detections["magpsf"].min()
+            zorder = 6
+            alpha = 0.6
+            ms=4
+
+        if "tag" in band_history.columns:
+            detections = band_history.query("tag=='valid'")
+        else:
+            detections = band_history
+        if len(detections) == 0:
+            logger.warning(f"{target.objectId} no detections for {band}")
+            #continue      
+
+        if "tag" in band_history.columns:
+            detections = band_history.query("tag=='valid'")
+            ulimits = band_history.query("tag=='upperlim'")
+            badqual = band_history.query("tag=='badquality'")
+
+            if not (len(detections) + len(ulimits) + len(badqual)) == len(band_history):
+                logger.warning(
+                    f"for band {band}:\n    len(det+ulimits+badqual)="
+                    f"{len(detections)}+{len(ulimits)}+{len(badqual)}"
+                    f" != len(df)={len(band_history)}"
+                )
+            if len(ulimits) > 0:
+                ax.errorbar(
+                    ulimits["jd"].values - t_ref.jd, ulimits["diffmaglim"],
+                    yerr=None, 
+                    ls="none", marker="v", color=band_color, mfc="none", ms=ms,
+                    zorder=zorder, alpha=alpha
+                )
+            if len(badqual) > 0:
+                ax.errorbar(
+                    badqual["jd"].values - t_ref.jd, badqual["mag"],
+                    yerr=badqual["magerr"].values, 
+                    ls="none", marker="o", color=band_color, mfc="none", ms=ms,
+                    zorder=zorder, alpha=alpha
+                )
+        else:
+            detections = band_history
+        if len(detections) > 0:
+            detections_scatter = ax.errorbar(
+                detections["jd"].values - t_ref.jd, detections["mag"],
+                yerr=detections["magerr"].values, 
+                ls="none", marker="o", color=band_color, ms=ms,
+                zorder=zorder, alpha=alpha, label=label
+            )
+            legend_handles.append(detections_scatter)
+            brightest_values.append(np.nanmin(detections["mag"]))
 
         
 
         #===== add models
-        #for model in models:
         if model is None:
-            continue # Still inside the fid loop...
+            continue # Still inside the band loop...
         #TODO: make this more "generic"? non-SN models might not have this function signature...
+        model_copy = copy.deepcopy(model)
         try:
-            model_flux = model.bandflux(band_lookup[fid], time_grid, zp=25., zpsys="ab")
+            test_flux = model.bandflux(band, time_grid, zp=25., zpsys="ab")
         except AttributeError as e:
             logger.info("couldn't call `bandflux` on model... ")
-        pos_mask = model_flux > 0
-        model_mag = -2.5 * np.log10(model_flux[ pos_mask ]) + 8.9
-        y_bright = min(y_bright, min(model_mag))
-        model_time = time_grid[ pos_mask ] - t_ref.jd
-        ax.axvline(model["t0"]-t_ref.jd, color="k", ls="--")
-        ax.plot(model_time, model_mag, color=f"C{ii}")
 
         if "samples" in model.res:
-            model_copy = copy.deepcopy(model)
-            param_dicts = [
-                {k: v} for params in model.res["samples"] for k, v in zip(
-                    model.res["vparam_names"], params
-                )
-            ]
+            pdict = np.nanmedian(model.res["samples"], axis=0) 
+            best_parameters = {
+                k: v for k,v in zip( model.res["vparam_names"], pdict )
+            }
+            model_copy.update(best_parameters)
+        model_flux = model_copy.bandflux(band, time_grid, zp=25., zpsys="ab")
+        #except AttributeError as e:
+        #logger.info("couldn't call `bandflux` on model... ")
+
+        pos_mask = model_flux > 0
+        model_mag = -2.5 * np.log10(model_flux[ pos_mask ]) + 8.9
+        brightest_values.append(np.min(model_mag[ np.isfinite(model_mag) ]))
+        model_time = time_grid[ pos_mask ] - t_ref.jd
+        ax.axvline(model["t0"]-t_ref.jd, color="k", ls="--")
+        ax.plot(model_time, model_mag, color=band_color, zorder=zorder, alpha=alpha)
+
+        if "samples" in model.res:
+            #model_copy = copy.deepcopy(model)
             lc_evaluations = []
             for p_jj, params in enumerate(model.res["samples"][::50]):
                 pdict = {k: v for k, v in zip(model.res["vparam_names"], params)}
                 model_copy.update(pdict)
-                lc_flux_jj = model_copy.bandflux(band_lookup[fid], time_grid, zp=25., zpsys="ab")
+                lc_flux_jj = model_copy.bandflux(band, time_grid, zp=25., zpsys="ab")
                 with np.errstate(divide="ignore", invalid="ignore"):
                     lc_mag_jj = -2.5 * np.log10(lc_flux_jj[ pos_mask ]) + 8.9
                 lc_evaluations.append(lc_mag_jj)
             lc_evaluations = np.vstack(lc_evaluations)
 
             lc_bounds = np.nanquantile(lc_evaluations, q=[0.16, 0.84], axis=0)
-            ax.fill_between(model_time, lc_bounds[0,:], lc_bounds[1,:], color=f"C{ii}", alpha=0.2)
-            
-    if target.atlas_data is not None:
-        for band, full_band_lc in target.atlas_data.groupby("F"):
-            band_lc = full_band_lc.query("(duJy < uJy) & (m > 0) & (m < mag5sig)")
-            atlas_jd = Time(band_lc["MJD"].values, format="mjd").jd - t_ref.jd
+            ax.fill_between(
+                model_time, lc_bounds[0,:], lc_bounds[1,:], 
+                color=band_color, alpha=0.2, zorder=zorder, 
+            )            
 
-            ax.errorbar(atlas_jd, band_lc["m"], yerr=band_lc["dm"], marker="x")
-
+    legend = ax.legend(handles=legend_handles, loc=2)
+    ax.add_artist(legend)
 
     ax.set_xlabel(xlabel, fontsize=14)
-    y_bright = min(y_bright - 0.2, 16.0)
+    y_bright = min(min(brightest_values) - 0.2, 16.0)
     ax.set_ylim(22., y_bright)
     #ax.set_ylim(ax.get_ylim()[::-1])
     ax.axvline(t_ref.jd-t_ref.jd, color="k")
 
     title = f"{target.objectId}, ra={target.ra:.4f} dec={target.dec:.5f}"
+    known_redshift = target.tns_data.parameters.get("Redshift", None)
+    if known_redshift is not None:
+        title = title + r" $z_{\rm TNS}=" + f"{known_redshift:.3f}" + "$"
+
     ax.text(
         0.5, 1.0, title, fontsize=14,
         ha="center", va="bottom", transform=ax.transAxes
@@ -409,7 +518,7 @@ def plot_lightcurve(target: Target, t_ref: Time=None, fig=None):
             1.02, 0.5, imtype, rotation=90, transform=im_ax.transAxes, ha="left", va="center"
         )
 
-        im = target.cutouts.get(imtype, None)
+        im = target.fink_data.cutouts.get(imtype, None)
         if im is None:
             continue
 

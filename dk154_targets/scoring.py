@@ -20,6 +20,9 @@ class ScoringBadReturnValueError(Exception):
     pass
 
 
+
+logger = logging.getLogger("default_score")
+
 def logistic(x, L, k, x0):
     return L / (1. + np.exp(-k * (x-x0)))
 
@@ -29,26 +32,46 @@ def gauss(x, A, mu, sig):
 def tuned_interest_function(x):
     return logistic(x, 10.0, -1./2., -6.) + gauss(x, 4., 0., 1.)
 
-def default_score(target: "Target", observatory: Observer, **kwargs):
-    times = {}
-    logger = logging.getLogger("default_score")
+def peak_only_interest_function(x):
+    return gauss(x, 10., 0., 1.)
 
-    jds = target.target_history['jd'].values
+def default_score(target: "Target", observatory: Observer, **kwargs):
+
+    """
+    jds = target.fink_data.lightcurve['jd'].values
     if not all(jds[:-1] <= jds[1:]):
         print(f"objectId: {target.objectId}")
         print(jds)
         raise ValueError("jds not all in order...")
+    """
     # make sure they're in ascending order.
 
     t_ref = kwargs.get("t_ref", Time.now())
     if not isinstance(t_ref, Time):
         raise ValueError(f"t_ref should be astropy.time.Time, not {type(t_ref)}")
 
-    if "tag" in target.target_history.columns:
-        detections = target.target_history.query("tag=='valid'")
-    else:
-        # If there is no 'tag' column, it means all the rows are 'valid'
-        detections = target.target_history
+    ztf_source_priority = ("fink", "alerce")
+    ztf_source = None
+    for source in ztf_source_priority:
+        source_data = getattr(target, f"{source}_data", None)
+        lightcurve = getattr(source_data, "lightcurve", None)
+        if lightcurve is not None:
+            ztf_source = source
+            if "tag" in lightcurve.columns:
+                detections = lightcurve.query("tag=='valid' or tag=='badquality'")
+            else:
+                detections = lightcurve
+            break
+    if ztf_source is None:
+        raise ValueError(f"None of {ztf_source_priority} ZTF data for {target.objectId}")
+
+    # if "tag" in target.alerce_data.lightcurve.columns:
+    #    detections = target.alerce_data.lightcurve.query("tag=='valid'")
+    # else:
+    #    # If there is no 'tag' column, it means all the rows are 'valid'
+    #    detections = target.alerce_data.lightcurve
+
+        
 
     ###============== set up some things to keep track =============###
     score = getattr(target, "base_score", 100.) # base score.
@@ -58,13 +81,34 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
     reject_comments = []
     score_comments = [f"base score {score:.2f}"]
     factors = {}
-    
 
-    ###====== Are there at least 2 observations in each band? =======###
+    if len(detections) == 0:
+        logger.info(f"{target.objectId} has no detections!")
+        reject = True
+        return np.nan, ["no detections!"], []
+
+
+    ###====== Are there at least 2 observations in one band? =======###
     N_obs = {}
     for fid, fid_detections in detections.groupby("fid"):
         N_obs[fid] = len(fid_detections)
-    if N_obs.get(1, 0) < 2 or N_obs.get(2, 0) < 2:
+
+    # 1 and 2 are ztf filter IDs.
+    not_enough_obs = (N_obs.get(1, 0) < 2) and (N_obs.get(2, 0) < 2) 
+    
+    is_alerce_stamp_candidate = False
+    if target.alerce_data.lightcurve is not None:
+        probs = target.alerce_data.probabilities
+        if probs is not None:
+            try:
+                stamp_sn_prob = probs.loc[("stamp_classifier", "SN")].probability
+            except KeyError as e:
+                stamp_sn_prob = 0.
+
+        if stamp_sn_prob > 0.5:
+            is_alerce_stamp_candidate = True
+
+    if not_enough_obs and (not is_alerce_stamp_candidate):
         reject = True
         reject_comments.append(f"N obs: {N_obs.get(1, 0)} g, {N_obs.get(2, 0)} r")
 
@@ -74,10 +118,10 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
     last_fid = detections["fid"].values[-1]
     band_lookup = {1: "g", 2: "r"}
     last_band = band_lookup[last_fid]
-    mag_factor = 10 ** ((18.5 - last_mag) / 2)
+    mag_factor = 10 ** ((18.5 - last_mag) / 4)
     factors["mag"] = mag_factor
     score = score * mag_factor
-    if last_mag > 18.5:
+    if last_mag > 19.5:
         reject_comments.append(f"Too faint: {last_band}={last_mag:.2f}")
         reject = True
     else:
@@ -91,7 +135,7 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
         timespan_factor = 1. / (timespan - 19.) # -19 means that t - 19 > 1 always.
         factors["timespan"] = timespan_factor
         score = score * timespan_factor
-        score_comments.append(f"timespan {timespan:.1f} gives f={timespan_factor:.2f}")
+        score_comments.append(f"timespan {timespan:.1f} (ie. >20) gives f={timespan_factor:.2f}")
     if timespan > 35:
         reject = True
         reject_comments.append(f"target is {timespan:.2f} days old")
@@ -135,8 +179,8 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
         score_comments.append(f"interest {interest_factor:.2f} from\n     peak={peak_dt:.2f} days")
         factors["interest"] = interest_factor
 
-        if peak_dt > 20.:
-            reject_comments.append("too far past peak")
+        if peak_dt > 15.:
+            reject_comments.append(f"too far past peak: {peak_dt:.1f}")
             reject = True
 
         ###===== Blue colour?
@@ -170,7 +214,7 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
 
         tonight = kwargs.get("tonight", None)
         if tonight is None:
-            tonight = observatory.tonight(time=kwargs.get())
+            tonight = observatory.tonight(time=t_ref)
 
         dt = 15 / (24 * 60)
         t1 = time.perf_counter()
@@ -179,13 +223,12 @@ def default_score(target: "Target", observatory: Observer, **kwargs):
         )
         if night_grid[-1] > tonight[-1]:
             night_grid = night_grid[:-1]
-        altaz_grid = observatory.altaz(night_grid, target)
+        altaz_grid = observatory.altaz(night_grid, target.coord)
 
-
-        if all(altaz_grid.alt.deg < minimum_altitude):
+        if all(altaz_grid.alt.deg <= minimum_altitude):
             negative_score = True
 
-        if altaz_grid[0].alt.deg < minimum_altitude:
+        if altaz_grid[0].alt.deg <= minimum_altitude:
             negative_score = True
         else:
             alt_above_minimum = np.maximum(altaz_grid.alt.deg, minimum_altitude) - minimum_altitude
@@ -225,10 +268,14 @@ def uniform_score(target: "Target", observatory: Observer):
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    x = np.linspace(-20, 10, 1000)
+    x = np.linspace(-6, 4, 1000)
     y = tuned_interest_function(x)
+    func = peak_only_interest_function
+
+    y = func(x)
     fig, ax = plt.subplots()
     ax.set_ylabel("factor", fontsize=16)
     ax.set_xlabel("days from model peak", fontsize=16)
     ax.plot(x, y)
+    fig.savefig(f"/home/aidan/{func.__name__}.pdf")
     plt.show()

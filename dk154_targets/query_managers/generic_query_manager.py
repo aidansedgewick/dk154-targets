@@ -1,4 +1,7 @@
 import abc
+import yaml
+
+from dk154_targets import paths
 
 class GenericQueryManager(abc.ABC):
 

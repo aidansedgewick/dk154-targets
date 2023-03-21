@@ -1,4 +1,6 @@
 from .generic_query_manager import GenericQueryManager
 
+from .alerce_query_manager import AlerceQueryManager
 from .atlas_query_manager import AtlasQueryManager
 from .fink_query_manager import FinkQueryManager
+from .tns_query_manager import TNSQueryManager

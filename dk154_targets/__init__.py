@@ -1,7 +1,7 @@
 import logging.config
 import yaml
 
-from .target_selector import TargetSelector
+from .target_selector import TargetSelector, Target
 
 from . import paths
 

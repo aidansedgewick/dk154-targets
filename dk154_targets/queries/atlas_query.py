@@ -28,6 +28,13 @@ class AtlasQuery:
         )
         return res
 
+    @classmethod
+    def get_existing_queries(cls, headers):
+        res = requests.get(
+            url=f"{cls.atlas_base_url}/queue", headers=headers
+        )
+        return res
+
     @staticmethod
     def process_df(photom_data, text_processed=False):
         if not text_processed:
