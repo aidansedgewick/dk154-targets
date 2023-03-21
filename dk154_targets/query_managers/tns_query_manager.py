@@ -130,7 +130,7 @@ class TNSQueryManager(GenericQueryManager):
 
         df_list = []
         while True:
-            t1 = time.clock()
+            t1 = time.perf_counter()
 
             url = f"{self.tns_base_url}?{param_url}&page={page}&num_page={num_page}"
             response = requests.post(url, headers=self.tns_headers)
@@ -167,7 +167,7 @@ class TNSQueryManager(GenericQueryManager):
                 logger.info(f"waiting {req_reset}s for reset...")
                 time.sleep(int(req_reset)+1.0)
 
-            t2 = time.clock()
+            t2 = time.perf_counter()
 
             if N_results < int(num_page):
                 logger.info(f"break after results < {num_page}")
