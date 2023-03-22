@@ -64,7 +64,10 @@ class AtlasQueryManager:
         recovered_queries = self.recover_existing_queries() # gets only the first page...
         while len(recovered_queries) > 0:
             self.retrieve_finished_queries(task_url_lookup=recovered_queries)
+            old_recovered_queries = recovered_queries
             recovered_queries = self.recover_existing_queries() # get the next page.
+            if set(old_recovered_queries) == set(recovered_queries):
+                break
 
     def recover_existing_queries(self):
         logger.info("recover existing queries...")

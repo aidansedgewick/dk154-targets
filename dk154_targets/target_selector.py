@@ -105,7 +105,7 @@ class TargetSelector:
         self.targets_of_opportunity_path.mkdir(exist_ok=True, parents=True)
 
 
-        ###========== telegram_messenger ==========###
+        ###============== messengers ==============###
         self.initialise_bots()
 
         ###=============== plotting ===============###
@@ -195,6 +195,7 @@ class TargetSelector:
 
 
     def initialise_bots(self,):
+        logger.info("initialise bots...")
         self.initialise_telegram_bot()
         self.initialise_slack_bot()
 
