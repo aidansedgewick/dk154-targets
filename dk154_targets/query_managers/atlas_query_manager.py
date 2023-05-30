@@ -210,7 +210,10 @@ class AtlasQueryManager:
                     if atlas_df_path.exists():
                         old_df = pd.read_csv(atlas_df_path)
                         if not old_df.empty:
-                            assert old_df["MJD"].max() < df["MJD"].min()
+                            #if not old_df["MJD"].max() < df["MJD"].min():
+                            #    raise ValueError(f"{objectId} old {old_df['MJD'].max()}, new {df['MJD'].min()}")
+                            old_max = old_df["MJD"].max()
+                            df.query("MJD > @old_max", inplace=True)
                             atlas_df = pd.concat([old_df, df])
                             atlas_df.reset_index(drop=True, inplace=True)
                         else:
